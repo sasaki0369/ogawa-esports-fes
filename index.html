@@ -96,10 +96,11 @@
   .status-PENDING{background:#F1EAD9;color:var(--sub);}
   .status-IN_PROGRESS{background:var(--burgundy);color:#fff;}
   .status-COMPLETED{background:var(--forest);color:#fff;}
-  .plist{margin-top:10px;display:flex;flex-wrap:wrap;gap:8px;}
-  .ptag{position:relative;background:#FFFDF9;border-radius:6px;padding:6px 12px;font-family:var(--font-mono);font-size:12px;border:1px solid var(--line);box-shadow:0 1px 2px rgba(43,36,30,.06);}
-  .ptag::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;border-radius:6px 0 0 6px;background:var(--gold);}
-  .ptag{padding-left:14px;}
+  .plist{margin-top:10px;display:grid;gap:8px;}
+  .ptag{position:relative;background:#FFFDF9;border-radius:6px;padding:8px 6px;font-family:var(--font-mono);font-size:12px;border:1px solid var(--line);box-shadow:0 1px 2px rgba(43,36,30,.06);text-align:center;overflow:hidden;}
+  .ptag-num{font-family:var(--font-mono);font-weight:700;font-size:15px;color:var(--gold);line-height:1.2;}
+  .ptag-name{font-size:11px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink);}
+  .ptag::before{content:"";position:absolute;left:0;top:0;width:100%;height:3px;background:var(--gold);}
   .ranking-result{margin-top:10px;font-size:13px;background:#FBF3DE;border:1px solid var(--gold);border-radius:6px;padding:10px 12px;font-family:var(--font-body);}
 
   .empty{text-align:center;color:var(--sub);padding:56px 10px;font-family:var(--font-display);font-size:16px;letter-spacing:.02em;}
@@ -297,26 +298,61 @@ function startTournament(){
   generateMatches(state.mode);
 }
 
+function pairKey(a,b){ return a<b ? a+","+b : b+","+a; }
+
+function buildPairHistorySet(){
+  const set = new Set();
+  state.matches.forEach(m=>{
+    const ps = m.participants;
+    for(let i=0;i<ps.length;i++){
+      for(let j=i+1;j<ps.length;j++) set.add(pairKey(ps[i],ps[j]));
+    }
+  });
+  return set;
+}
+
+function scoreGrouping(groups, historySet){
+  let score = 0;
+  groups.forEach(g=>{
+    for(let i=0;i<g.length;i++){
+      for(let j=i+1;j<g.length;j++){
+        if (historySet.has(pairKey(g[i],g[j]))) score++;
+      }
+    }
+  });
+  return score;
+}
+
+// 敗者戦も含め、既に対戦したことがある組み合わせをできるだけ避けてグループ分けする
+function groupMinimizingRematches(numbers, groupSize, historySet){
+  let best = chunk(shuffled(numbers), groupSize);
+  let bestScore = scoreGrouping(best, historySet);
+  const attempts = numbers.length <= 16 ? 400 : 150;
+  for (let a=0; a<attempts && bestScore>0; a++){
+    const groups = chunk(shuffled(numbers), groupSize);
+    const score = scoreGrouping(groups, historySet);
+    if (score < bestScore){ bestScore = score; best = groups; }
+  }
+  return best;
+}
+
 function generateMatches(mode){
   if (state.participants.length === 0) { toast("参加者を登録してください"); return; }
   const count = [32,24,16].includes(mode) ? mode : null;
   if (!count) return;
   const shuf = shuffled(state.participants);
-  const selected = shuf.slice(0, count).sort((a,b)=>a.number-b.number);
-  const groupCount = count/4;
-  const matches = [];
-  for (let i=0;i<groupCount;i++){
-    const grp = selected.slice(i*4, i*4+4).map(p=>p.number);
-    matches.push({
-      id: `予選R${i+1}`,
-      roundType: "PRELIMINARY",
-      roundNumber: i+1,
-      screenId: `予選R1-${letterFor(i)}`,
-      participants: grp,
-      status: "PENDING",
-      rankings: []
-    });
-  }
+  const selected = shuf.slice(0, count).map(p=>p.number);
+  const historySet = buildPairHistorySet();
+  const groups = groupMinimizingRematches(selected, 4, historySet);
+  const matches = groups.map((grp, i) => ({
+    id: `予選R${i+1}`,
+    roundType: "PRELIMINARY",
+    roundNumber: i+1,
+    screenId: `予選R1-${letterFor(i)}`,
+    participants: grp,
+    status: "PENDING",
+    rankings: []
+  }));
   state.matches = matches;
   state.phase = "PRELIMINARY";
   persist();
@@ -329,28 +365,41 @@ function startMatch(matchId){
 
 function recordMatchResult(matchId, rankings){
   state.matches = state.matches.map(m => m.id===matchId ? {...m, status:"COMPLETED", rankings} : m);
-  checkAndProgressPhase();
   persist();
 }
 
-function checkAndProgressPhase(){
+// 現在のフェーズの試合がすべて完了し、次のステージへ進めるかどうか
+function isPhaseReadyToAdvance(){
   const roundType = ROUND_FOR_PHASE[state.phase];
-  if (!roundType) return;
+  if (!roundType) return false;
   const phaseMatches = state.matches.filter(m => m.roundType === roundType);
-  if (phaseMatches.length > 0 && phaseMatches.every(m => m.status === "COMPLETED")) {
-    if (state.phase === "PRELIMINARY") generateLosersRevivalMatches();
-    else if (state.phase === "LOSERS_REVIVAL") generateMainRoundMatches();
-    else if (state.phase === "MAIN_ROUND") generateSemiFinalMatches();
-    else if (state.phase === "SEMI_FINAL") generateGrandFinal();
-    else if (state.phase === "FINAL") completeTournament();
-  }
+  return phaseMatches.length > 0 && phaseMatches.every(m => m.status === "COMPLETED");
+}
+
+const NEXT_STAGE_LABEL = {
+  PRELIMINARY: "敗者復活ステージへ進む",
+  LOSERS_REVIVAL: "本選ステージへ進む",
+  MAIN_ROUND: "準決勝ステージへ進む",
+  SEMI_FINAL: "決勝ステージへ進む",
+  FINAL: "結果を確定する"
+};
+
+function advanceToNextPhase(){
+  if (!isPhaseReadyToAdvance()) return;
+  if (state.phase === "PRELIMINARY") generateLosersRevivalMatches();
+  else if (state.phase === "LOSERS_REVIVAL") generateMainRoundMatches();
+  else if (state.phase === "MAIN_ROUND") generateSemiFinalMatches();
+  else if (state.phase === "SEMI_FINAL") generateGrandFinal();
+  else if (state.phase === "FINAL") completeTournament();
+  persist();
 }
 
 function generateLosersRevivalMatches(){
   const prelim = state.matches.filter(m=>m.roundType==="PRELIMINARY");
   const losers = prelim.flatMap(m => m.rankings.slice(2));
-  const chunks = chunk(losers, 4);
-  const newMatches = chunks.map((grp, i) => ({
+  const historySet = buildPairHistorySet();
+  const groups = groupMinimizingRematches(losers, 4, historySet);
+  const newMatches = groups.map((grp, i) => ({
     id: `敗者復活R${i+1}`,
     roundType: "LOSERS_REVIVAL",
     roundNumber: i+1,
@@ -368,9 +417,10 @@ function generateMainRoundMatches(){
   const winners = prelim.flatMap(m=>m.rankings.slice(0,2));
   const revival = state.matches.filter(m=>m.roundType==="LOSERS_REVIVAL");
   const revivalWinners = revival.flatMap(m=>m.rankings.slice(0,2));
-  const all = shuffled([...winners, ...revivalWinners]);
-  const chunks = chunk(all, 4);
-  const newMatches = chunks.map((grp,i)=>({
+  const all = [...winners, ...revivalWinners];
+  const historySet = buildPairHistorySet();
+  const groups = groupMinimizingRematches(all, 4, historySet);
+  const newMatches = groups.map((grp,i)=>({
     id: `本選R${i+1}`,
     roundType: "MAIN_ROUND",
     roundNumber: i+1,
@@ -386,8 +436,9 @@ function generateMainRoundMatches(){
 function generateSemiFinalMatches(){
   const main = state.matches.filter(m=>m.roundType==="MAIN_ROUND");
   const winners = main.flatMap(m=>m.rankings.slice(0,2));
-  const chunks = chunk(winners, 4);
-  const newMatches = chunks.map((grp,i)=>({
+  const historySet = buildPairHistorySet();
+  const groups = groupMinimizingRematches(winners, 4, historySet);
+  const newMatches = groups.map((grp,i)=>({
     id: `準決勝R${i+1}`,
     roundType: "SEMI_FINAL",
     roundNumber: i+1,
@@ -408,7 +459,7 @@ function generateGrandFinal(){
     roundType: "GRAND_FINAL",
     roundNumber: 1,
     screenId: "決勝",
-    participants: winners,
+    participants: shuffled(winners),
     status: "PENDING",
     rankings: []
   };
@@ -429,6 +480,49 @@ function chunk(arr, size){
   const out = [];
   for (let i=0;i<arr.length;i+=size) out.push(arr.slice(i,i+size));
   return out;
+}
+
+// 参加者ごとの戦績記号(○:勝ち ×:負け △:復活 ◎:優勝)と現在ステータスを算出
+function computeParticipantRecord(number){
+  const relevant = state.matches.filter(m => m.participants.includes(number) && m.status === "COMPLETED");
+  if (relevant.length === 0) return { symbols: [], status: null };
+  const symbols = relevant.map(m=>{
+    const rank = m.rankings.indexOf(number);
+    if (m.roundType === "GRAND_FINAL") return rank === 0 ? "◎" : "×";
+    if (m.roundType === "LOSERS_REVIVAL") return rank < 2 ? "△" : "×";
+    return rank < 2 ? "○" : "×";
+  });
+  let status;
+  if (state.champion === number) {
+    status = "優勝";
+  } else {
+    const lastMatch = relevant[relevant.length - 1];
+    const lastRank = lastMatch.rankings.indexOf(number);
+    const lastWon = lastMatch.roundType === "GRAND_FINAL" ? lastRank === 0 : lastRank < 2;
+    if (!lastWon && lastMatch.roundType !== "PRELIMINARY") {
+      status = "敗退";
+    } else if (!lastWon && lastMatch.roundType === "PRELIMINARY") {
+      const revivalGenerated = state.matches.some(m=>m.roundType==="LOSERS_REVIVAL");
+      const inRevival = state.matches.some(m=>m.roundType==="LOSERS_REVIVAL" && m.participants.includes(number));
+      status = (revivalGenerated && !inRevival) ? "敗退" : "勝ち上がり中";
+    } else {
+      status = "勝ち上がり中";
+    }
+  }
+  return { symbols, status };
+}
+
+function computeStatusCounts(){
+  let winners=0, losers=0, revived=0;
+  state.participants.forEach(p=>{
+    const rec = computeParticipantRecord(p.number);
+    if (!rec.status) return;
+    if (rec.status === "勝ち上がり中" || rec.status === "優勝") winners++;
+    else if (rec.status === "敗退") losers++;
+    if (rec.symbols.includes("△")) revived++;
+  });
+  const finalists = state.matches.filter(m=>m.roundType==="GRAND_FINAL").reduce((acc,m)=>acc+m.participants.length,0);
+  return { winners, losers, revived, finalists };
 }
 
 function clearTournamentData(){
@@ -704,6 +798,7 @@ function phaseItemHtml(title, desc, roundType, winners){
 
 function renderParticipants(){
   const main = document.getElementById("main");
+  const counts = computeStatusCounts();
   main.innerHTML = `
     <div class="card">
       <div class="row">
@@ -719,13 +814,25 @@ function renderParticipants(){
       </div>
     </div>
     <div class="card">
-      <div class="participant-grid" id="participantGrid"></div>
+      <div class="muted">記録記号　○:勝ち　×:負け　△:復活　◎:優勝</div>
     </div>
+    <div class="card">
+      <div class="row" style="text-align:center;">
+        <div style="flex:1;"><div style="font-family:var(--font-display);font-size:26px;color:var(--forest);">${counts.winners}</div><div class="muted">勝者</div></div>
+        <div style="flex:1;"><div style="font-family:var(--font-display);font-size:26px;color:var(--burgundy);">${counts.losers}</div><div class="muted">敗者</div></div>
+        <div style="flex:1;"><div style="font-family:var(--font-display);font-size:26px;color:var(--steel);">${counts.revived}</div><div class="muted">復活</div></div>
+        <div style="flex:1;"><div style="font-family:var(--font-display);font-size:26px;color:var(--gold);">${counts.finalists}</div><div class="muted">決勝</div></div>
+      </div>
+    </div>
+    <div id="participantList"></div>
   `;
-  const grid = document.getElementById("participantGrid");
+  const list = document.getElementById("participantList");
   state.participants.forEach(p => {
-    const num = el(`<div class="participant-num">No.${p.number}</div>`);
-    const inputWrap = el(`<div></div>`);
+    const rec = computeParticipantRecord(p.number);
+    const row = el(`<div class="card" style="padding:12px 14px 12px 18px;margin-bottom:8px;"></div>`);
+    const top = el(`<div class="row" style="gap:10px;"></div>`);
+    const num = el(`<div class="participant-num" style="min-width:30px;">${p.number}</div>`);
+    const inputWrap = el(`<div style="flex:1;"></div>`);
     const input = document.createElement("input");
     input.type = "text";
     input.placeholder = "名前";
@@ -736,8 +843,18 @@ function renderParticipants(){
     };
     input.onblur = () => persist();
     inputWrap.appendChild(input);
-    grid.appendChild(num);
-    grid.appendChild(inputWrap);
+    top.appendChild(num);
+    top.appendChild(inputWrap);
+    row.appendChild(top);
+    if (rec.status) {
+      const statusColor = rec.status==="優勝" ? "var(--gold)" : rec.status==="敗退" ? "var(--sub)" : "var(--steel)";
+      const statusRow = el(`<div class="row" style="margin-top:8px;">
+        <span style="color:${statusColor};font-weight:700;font-family:var(--font-display);font-size:14px;">${rec.status}</span>
+        <span style="font-family:var(--font-mono);letter-spacing:.15em;color:var(--sub);font-size:14px;">${rec.symbols.join(" ")}</span>
+      </div>`);
+      row.appendChild(statusRow);
+    }
+    list.appendChild(row);
   });
   document.getElementById("initBtn").onclick = () => { initializeParticipants(); persist(); render(); };
   document.getElementById("clearNamesBtn").onclick = () => { if(confirm("すべての参加者名をクリアしますか？")){ clearParticipantNames(); persist(); render(); } };
@@ -774,13 +891,18 @@ function phaseCaption(){
 
 function renderTournament(){
   const main = document.getElementById("main");
+  const readyToAdvance = isPhaseReadyToAdvance() && state.phase !== "FINAL";
+  const readyToFinish = isPhaseReadyToAdvance() && state.phase === "FINAL";
   main.innerHTML = `
     <div class="card">
       <div class="row"><h2 style="margin:0;">試合進行</h2><span class="pill pill-active">${PHASE_LABEL[state.phase]}</span></div>
       <div class="muted" style="margin-top:6px;">${phaseCaption()}</div>
+      ${(readyToAdvance||readyToFinish) ? `<button class="btn btn-primary" id="advanceBtn" style="margin-top:12px;">${NEXT_STAGE_LABEL[state.phase]}</button>` : ''}
     </div>
     <div id="matchList"></div>
   `;
+  const advBtn = document.getElementById("advanceBtn");
+  if (advBtn) advBtn.onclick = () => { advanceToNextPhase(); render(); };
   const list = document.getElementById("matchList");
   if (state.matches.length === 0) {
     list.innerHTML = `<div class="empty">大会を開始すると試合が表示されます</div>`;
@@ -796,18 +918,22 @@ function renderTournament(){
   sorted.forEach(m => list.appendChild(renderMatchCard(m)));
 }
 
+function participantGridHtml(numbers){
+  const cells = numbers.map(n=>{
+    const nm = pname(n);
+    return `<div class="ptag"><div class="ptag-num">${n}</div><div class="ptag-name">${nm||''}</div></div>`;
+  }).join("");
+  return `<div class="plist" style="grid-template-columns:repeat(${numbers.length},1fr);">${cells}</div>`;
+}
+
 function renderMatchCard(match){
   const card = el(`<div class="match-card"></div>`);
-  const nameList = match.participants.map(n=>{
-    const nm = pname(n);
-    return `<span class="ptag">No.${n}${nm?" "+nm:""}</span>`;
-  }).join("");
   card.innerHTML = `
     <div class="row">
       <span class="mid">${match.id}</span>
       <span class="status-badge status-${match.status}">${match.status==='PENDING'?'待機中':match.status==='IN_PROGRESS'?'進行中':'完了'}</span>
     </div>
-    <div class="plist">${nameList}</div>
+    ${participantGridHtml(match.participants)}
   `;
   if (match.status === "PENDING") {
     const btn = el(`<button class="btn btn-primary" style="margin-top:10px;">試合開始</button>`);
@@ -823,6 +949,7 @@ function renderMatchCard(match){
   }
   return card;
 }
+
 
 function openRankingModal(match){
   let rankings = [];
@@ -958,7 +1085,7 @@ function renderDisplay(){
       const grid = body.querySelector(".grid-match");
       current.slice(0,2).forEach(m => {
         const c = el(`<div class="match-card"></div>`);
-        c.innerHTML = `<div class="mid" style="font-size:18px;">${m.id}</div><div class="plist">${m.participants.map(n=>`<span class="ptag" style="font-size:14px;">No.${n} ${pname(n)}</span>`).join("")}</div>`;
+        c.innerHTML = `<div class="mid" style="font-size:18px;">${m.id}</div>${participantGridHtml(m.participants)}`;
         grid.appendChild(c);
       });
     } else if (state.champion !== null && topThree.length === 3) {
@@ -978,7 +1105,7 @@ function renderDisplay(){
       body.innerHTML = `<div style="font-size:20px;font-weight:800;color:var(--cyan);margin-bottom:10px;">次の対戦</div>`;
       next.forEach(m => {
         const c = el(`<div class="next-card" style="margin-bottom:10px;"></div>`);
-        c.innerHTML = `<div style="font-weight:700;">${m.id}</div><div class="plist">${m.participants.map(n=>`<span class="ptag">No.${n} ${pname(n)}</span>`).join("")}</div>`;
+        c.innerHTML = `<div style="font-weight:700;">${m.id}</div>${participantGridHtml(m.participants)}`;
         body.appendChild(c);
       });
     } else {
@@ -1005,7 +1132,7 @@ function renderDisplay(){
     } else {
       pending.forEach(m=>{
         const c = el(`<div class="next-card"></div>`);
-        c.innerHTML = `<div style="font-weight:700;color:var(--cyan);">${m.id}</div><div class="plist">${m.participants.map(n=>`<span class="ptag">No.${n} ${pname(n)}</span>`).join("")}</div>`;
+        c.innerHTML = `<div style="font-weight:700;color:var(--cyan);">${m.id}</div>${participantGridHtml(m.participants)}`;
         grid.appendChild(c);
       });
     }
