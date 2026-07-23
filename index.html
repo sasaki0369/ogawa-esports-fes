@@ -346,13 +346,36 @@ function scoreGrouping(groups, historySet){
   return score;
 }
 
+// 人数が4の倍数でない場合に、3人組を交ぜて調整するグループサイズ配列を作る
+function splitIntoGroupSizes(n){
+  if (n <= 4) return n > 0 ? [n] : [];
+  const q = Math.floor(n / 4);
+  const r = n % 4;
+  if (r === 0) return Array(q).fill(4);
+  if (r === 3) return [...Array(q).fill(4), 3];
+  if (r === 2) return q >= 1 ? [...Array(q-1).fill(4), 3, 3] : [2];
+  // r === 1
+  if (q >= 2) return [...Array(q-2).fill(4), 3, 3, 3];
+  if (q === 1) return [5]; // 4+1 -> 5人バトルとしてまとめる(稀なケース)
+  return [1];
+}
+
+function chunkBySizes(arr, sizes){
+  const out = [];
+  let idx = 0;
+  for (const s of sizes){ out.push(arr.slice(idx, idx+s)); idx += s; }
+  return out;
+}
+
 // 敗者戦も含め、既に対戦したことがある組み合わせをできるだけ避けてグループ分けする
-function groupMinimizingRematches(numbers, groupSize, historySet){
-  let best = chunk(shuffled(numbers), groupSize);
+// (人数が4の倍数でない場合は3人組を交ぜて調整する)
+function groupMinimizingRematches(numbers, historySet){
+  const sizes = splitIntoGroupSizes(numbers.length);
+  let best = chunkBySizes(shuffled(numbers), sizes);
   let bestScore = scoreGrouping(best, historySet);
   const attempts = numbers.length <= 16 ? 400 : 150;
   for (let a=0; a<attempts && bestScore>0; a++){
-    const groups = chunk(shuffled(numbers), groupSize);
+    const groups = chunkBySizes(shuffled(numbers), sizes);
     const score = scoreGrouping(groups, historySet);
     if (score < bestScore){ bestScore = score; best = groups; }
   }
@@ -360,13 +383,16 @@ function groupMinimizingRematches(numbers, groupSize, historySet){
 }
 
 function generateMatches(mode){
-  if (state.participants.length === 0) { toast("参加者を登録してください"); return; }
+  const named = state.participants.filter(p => p.name && p.name.trim() !== "");
+  if (named.length === 0) { toast("参加者を登録してください"); return; }
   const count = [32,24,16].includes(mode) ? mode : null;
   if (!count) return;
-  const shuf = shuffled(state.participants);
-  const selected = shuf.slice(0, count).map(p=>p.number);
+  const pool = shuffled(named).slice(0, Math.min(count, named.length)).map(p=>p.number);
+  if (pool.length < count) {
+    toast(`登録人数が${count}人未満のため、${pool.length}人で大会を開始します`);
+  }
   const historySet = buildPairHistorySet();
-  const groups = groupMinimizingRematches(selected, 4, historySet);
+  const groups = groupMinimizingRematches(pool, historySet);
   const matches = groups.map((grp, i) => ({
     id: `予選R${i+1}`,
     roundType: "PRELIMINARY",
@@ -421,7 +447,7 @@ function generateLosersRevivalMatches(){
   const prelim = state.matches.filter(m=>m.roundType==="PRELIMINARY");
   const losers = prelim.flatMap(m => m.rankings.slice(2));
   const historySet = buildPairHistorySet();
-  const groups = groupMinimizingRematches(losers, 4, historySet);
+  const groups = groupMinimizingRematches(losers, historySet);
   const newMatches = groups.map((grp, i) => ({
     id: `敗者復活R${i+1}`,
     roundType: "LOSERS_REVIVAL",
@@ -442,7 +468,7 @@ function generateMainRoundMatches(){
   const revivalWinners = revival.flatMap(m=>m.rankings.slice(0,2));
   const all = [...winners, ...revivalWinners];
   const historySet = buildPairHistorySet();
-  const groups = groupMinimizingRematches(all, 4, historySet);
+  const groups = groupMinimizingRematches(all, historySet);
   const newMatches = groups.map((grp,i)=>({
     id: `本選R${i+1}`,
     roundType: "MAIN_ROUND",
@@ -460,7 +486,7 @@ function generateSemiFinalMatches(){
   const main = state.matches.filter(m=>m.roundType==="MAIN_ROUND");
   const winners = main.flatMap(m=>m.rankings.slice(0,2));
   const historySet = buildPairHistorySet();
-  const groups = groupMinimizingRematches(winners, 4, historySet);
+  const groups = groupMinimizingRematches(winners, historySet);
   const newMatches = groups.map((grp,i)=>({
     id: `準決勝R${i+1}`,
     roundType: "SEMI_FINAL",
@@ -891,10 +917,12 @@ function renderParticipants(){
 }
 
 function phaseCaption(){
-  const mode = state.mode;
-  const groupCount = mode/4;
   switch(state.phase){
-    case "PRELIMINARY": return `${groupCount}試合（4人×${groupCount}）｜上位2名が勝者`;
+    case "PRELIMINARY": {
+      const prelim = state.matches.filter(m=>m.roundType==="PRELIMINARY");
+      const sizes = prelim.map(m=>m.participants.length).join("+");
+      return `${prelim.length}試合（${sizes}人）｜上位2名が勝者`;
+    }
     case "LOSERS_REVIVAL": {
       const c = state.matches.filter(m=>m.roundType==="LOSERS_REVIVAL").length;
       return `${c}試合｜上位2名が復活`;
