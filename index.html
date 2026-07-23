@@ -1084,23 +1084,9 @@ function openDisplay(){
   view.classList.add("show");
   dispPage = 0;
   renderDisplay();
-  // 可能であれば全画面化＋横画面ロックを試みる(対応ブラウザのみ。非対応時はCSSで擬似的に横画面表示する)
-  try {
-    if (view.requestFullscreen) {
-      view.requestFullscreen().then(()=>{
-        if (screen.orientation && screen.orientation.lock) {
-          screen.orientation.lock("landscape").catch(()=>{});
-        }
-      }).catch(()=>{});
-    }
-  } catch(e) {}
 }
 function closeDisplay(){
   document.getElementById("displayView").classList.remove("show");
-  try {
-    if (document.fullscreenElement) document.exitFullscreen().catch(()=>{});
-    if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock();
-  } catch(e) {}
 }
 document.getElementById("dispClose").onclick = closeDisplay;
 document.getElementById("dispTabs").addEventListener("click", (e)=>{
