@@ -428,17 +428,44 @@ function isPhaseReadyToAdvance(){
 const NEXT_STAGE_LABEL = {
   PRELIMINARY: "敗者復活ステージへ進む",
   LOSERS_REVIVAL: "本選ステージへ進む",
-  MAIN_ROUND: "準決勝ステージへ進む",
-  SEMI_FINAL: "決勝ステージへ進む",
   FINAL: "結果を確定する"
 };
+
+// 直近のSEMI_FINAL/MAIN_ROUNDの勝者数を見て、ボタンの文言を決める
+// (人数によっては準決勝を複数回繰り返して4人まで絞り込むため)
+function getNextStageLabel(){
+  if (state.phase === "MAIN_ROUND") {
+    const main = state.matches.filter(m=>m.roundType==="MAIN_ROUND");
+    const winners = main.flatMap(m=>m.rankings.slice(0,2));
+    return winners.length <= 4 ? "決勝ステージへ進む" : "準決勝ステージへ進む";
+  }
+  if (state.phase === "SEMI_FINAL") {
+    const winners = latestRoundMatches("SEMI_FINAL").flatMap(m=>m.rankings.slice(0,2));
+    return winners.length <= 4 ? "決勝ステージへ進む" : "準決勝を続ける（絞り込み）";
+  }
+  return NEXT_STAGE_LABEL[state.phase];
+}
+
+function latestRoundMatches(roundType){
+  const matches = state.matches.filter(m=>m.roundType===roundType);
+  if (matches.length === 0) return [];
+  const maxRound = Math.max(...matches.map(m=>m.roundNumber));
+  return matches.filter(m=>m.roundNumber===maxRound);
+}
 
 function advanceToNextPhase(){
   if (!isPhaseReadyToAdvance()) return;
   if (state.phase === "PRELIMINARY") generateLosersRevivalMatches();
   else if (state.phase === "LOSERS_REVIVAL") generateMainRoundMatches();
-  else if (state.phase === "MAIN_ROUND") generateSemiFinalMatches();
-  else if (state.phase === "SEMI_FINAL") generateGrandFinal();
+  else if (state.phase === "MAIN_ROUND") {
+    const main = state.matches.filter(m=>m.roundType==="MAIN_ROUND");
+    const winners = main.flatMap(m=>m.rankings.slice(0,2));
+    proceedTowardFinal(winners);
+  }
+  else if (state.phase === "SEMI_FINAL") {
+    const winners = latestRoundMatches("SEMI_FINAL").flatMap(m=>m.rankings.slice(0,2));
+    proceedTowardFinal(winners);
+  }
   else if (state.phase === "FINAL") completeTournament();
   persist();
 }
@@ -482,16 +509,42 @@ function generateMainRoundMatches(){
   state.phase = "MAIN_ROUND";
 }
 
-function generateSemiFinalMatches(){
-  const main = state.matches.filter(m=>m.roundType==="MAIN_ROUND");
-  const winners = main.flatMap(m=>m.rankings.slice(0,2));
+// 準決勝の絞り込み専用：人数が5〜8人ならちょうど2組に分け、上位2名ずつ(計4名)で決勝へ
+// 9人以上ならいつもの3人/4人混在ルールで、必要なら準決勝を複数回繰り返す
+function splitForSemiReduction(n){
+  if (n <= 4) return n > 0 ? [n] : [];
+  if (n <= 8) {
+    const g1 = Math.ceil(n/2);
+    const g2 = n - g1;
+    return g2 > 0 ? [g1, g2] : [g1];
+  }
+  return splitIntoGroupSizes(n);
+}
+
+// 決勝が必ず4人になるよう、人数に応じて準決勝を挟むか・繰り返すかを決める
+function proceedTowardFinal(pool){
+  if (pool.length <= 4) {
+    generateGrandFinal(pool);
+    return;
+  }
+  const existingRoundNumbers = state.matches.filter(m=>m.roundType==="SEMI_FINAL").map(m=>m.roundNumber);
+  const roundNumber = existingRoundNumbers.length ? Math.max(...existingRoundNumbers) + 1 : 1;
   const historySet = buildPairHistorySet();
-  const groups = groupMinimizingRematches(winners, historySet);
-  const newMatches = groups.map((grp,i)=>({
-    id: `準決勝R${i+1}`,
+  const sizes = splitForSemiReduction(pool.length);
+  let best = chunkBySizes(shuffled(pool), sizes);
+  let bestScore = scoreGrouping(best, historySet);
+  const attempts = pool.length <= 16 ? 400 : 150;
+  for (let a=0; a<attempts && bestScore>0; a++){
+    const groups = chunkBySizes(shuffled(pool), sizes);
+    const score = scoreGrouping(groups, historySet);
+    if (score < bestScore){ bestScore = score; best = groups; }
+  }
+  const label = roundNumber === 1 ? "準決勝" : `準決勝(${roundNumber}回戦)`;
+  const newMatches = best.map((grp,i)=>({
+    id: `${label}R${i+1}`,
     roundType: "SEMI_FINAL",
-    roundNumber: i+1,
-    screenId: `準決勝R1-${letterFor(i)}`,
+    roundNumber: roundNumber,
+    screenId: `${label}-${letterFor(i)}`,
     participants: grp,
     status: "PENDING",
     rankings: []
@@ -500,9 +553,7 @@ function generateSemiFinalMatches(){
   state.phase = "SEMI_FINAL";
 }
 
-function generateGrandFinal(){
-  const semi = state.matches.filter(m=>m.roundType==="SEMI_FINAL");
-  const winners = semi.flatMap(m=>m.rankings.slice(0,2));
+function generateGrandFinal(winners){
   const grandFinal = {
     id: "決勝",
     roundType: "GRAND_FINAL",
@@ -803,13 +854,13 @@ function renderHome(){
 
     <div class="card">
       <h2>進行フロー</h2>
-      ${phaseItemHtml('1. 予選', `4人対戦 × ${state.mode/4}試合｜上位2名が通過`, 'PRELIMINARY', prelimWinners)}
+      ${phaseItemHtml('1. 予選', `上位2名が通過`, 'PRELIMINARY', prelimWinners)}
       ${phaseItemHtml('2. 敗者復活', '予選敗者から上位2名が復活', 'LOSERS_REVIVAL', revived)}
       ${phaseItemHtml('3. 本選', '通過者+復活者で再抽選｜上位2名が通過', 'MAIN_ROUND', finalists)}
       ${phaseItemHtml('4. 準決勝', '本選通過者による対戦｜上位2名が決勝進出', 'SEMI_FINAL', [])}
-      ${phaseItemHtml('5. 決勝', '4人による最終決戦', 'FINAL', [])}
-      ${state.champion !== null ? `<div class="phase-item"><div class="phase-title" style="color:var(--red);">🏆 優勝: No.${state.champion} ${pname(state.champion)}</div></div>` : ''}
+      ${phaseItemHtml('5. 決勝', '最終決戦', 'FINAL', [])}
     </div>
+    ${state.champion !== null ? renderPodiumSummaryCard() : ''}
 
     <div class="card">
       <button class="btn btn-ghost" id="startNewBtn">新規大会を開始（現在のデータを破棄）</button>
@@ -843,6 +894,20 @@ function phaseItemHtml(title, desc, roundType, winners){
       ${winners && winners.length ? `<div class="winners">通過: ${winners.join(", ")}</div>` : ''}
     </div>
   `;
+}
+
+function renderPodiumSummaryCard(){
+  const gf = state.matches.find(m=>m.roundType==="GRAND_FINAL"&&m.status==="COMPLETED");
+  const ranks = gf ? gf.rankings : [];
+  const labels = ["🥇優勝","🥈準優勝","🥉3位"];
+  const colors = ["var(--gold)","var(--sub)","#B0755A"];
+  const rows = ranks.slice(0,3).map((num,i)=>`
+    <div class="row" ${i>0?'style="margin-top:8px;"':''}>
+      <span style="font-family:var(--font-display);font-weight:700;color:${colors[i]};">${labels[i]}</span>
+      <span style="font-weight:700;">No.${num} ${pname(num)}</span>
+    </div>
+  `).join("");
+  return `<div class="card"><h2>表彰結果</h2>${rows}</div>`;
 }
 
 function renderParticipants(){
@@ -932,8 +997,10 @@ function phaseCaption(){
       return `${c}試合｜上位2名が通過`;
     }
     case "SEMI_FINAL": {
-      const c = state.matches.filter(m=>m.roundType==="SEMI_FINAL").length;
-      return `${c}試合｜上位2名が決勝進出`;
+      const latest = latestRoundMatches("SEMI_FINAL");
+      const rounds = Math.max(...state.matches.filter(m=>m.roundType==="SEMI_FINAL").map(m=>m.roundNumber));
+      const roundNote = rounds > 1 ? `（絞り込み${rounds}回戦）` : "";
+      return `${latest.length}試合${roundNote}｜上位2名が決勝進出`;
     }
     case "FINAL": return `決勝戦`;
     default: return "";
@@ -948,7 +1015,7 @@ function renderTournament(){
     <div class="card">
       <div class="row"><h2 style="margin:0;">試合進行</h2><span class="pill pill-active">${PHASE_LABEL[state.phase]}</span></div>
       <div class="muted" style="margin-top:6px;">${phaseCaption()}</div>
-      ${(readyToAdvance||readyToFinish) ? `<button class="btn btn-primary" id="advanceBtn" style="margin-top:12px;">${NEXT_STAGE_LABEL[state.phase]}</button>` : ''}
+      ${(readyToAdvance||readyToFinish) ? `<button class="btn btn-primary" id="advanceBtn" style="margin-top:12px;">${getNextStageLabel()}</button>` : ''}
     </div>
     <div id="matchList"></div>
   `;
@@ -1158,18 +1225,17 @@ function renderDisplay(){
         c.innerHTML = `<div class="mid" style="font-size:18px;">${m.id}</div>${participantGridHtml(m.participants)}`;
         grid.appendChild(c);
       });
-    } else if (state.champion !== null && topThree.length === 3) {
-      body.innerHTML = `<div style="text-align:center;font-size:28px;font-weight:800;color:var(--red);">🏆 表彰台 🏆</div>`;
+    } else if (state.champion !== null && topThree.length >= 1) {
+      body.innerHTML = "";
+      body.appendChild(el(`<div style="text-align:center;font-size:28px;font-weight:800;color:var(--red);">🏆 表彰台 🏆</div>`));
       const row = el(`<div class="podium-row"></div>`);
       const medals = ["🥇","🥈","🥉"];
-      const order = [1,0,2]; // 2位,1位,3位の順で表示
+      const order = [1,0,2].filter(i => topThree[i] !== undefined); // 2位,1位,3位の順で表示(存在するものだけ)
       order.forEach(i => {
         const num = topThree[i];
         const div = el(`<div class="podium-card p${i+1}"><div class="medal">${medals[i]}</div><div style="font-weight:800;font-size:20px;">${pname(num)||('No.'+num)}</div><div class="muted">No.${num}</div></div>`);
         row.appendChild(div);
       });
-      body.innerHTML = ""; 
-      body.appendChild(el(`<div style="text-align:center;font-size:28px;font-weight:800;color:var(--red);">🏆 表彰台 🏆</div>`));
       body.appendChild(row);
     } else if (next.length > 0) {
       body.innerHTML = `<div style="font-size:20px;font-weight:800;color:var(--cyan);margin-bottom:10px;">次の対戦</div>`;
