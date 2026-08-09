@@ -108,6 +108,9 @@
   .ptag{position:relative;background:#FFFDF9;border-radius:6px;padding:8px 6px;font-family:var(--font-mono);font-size:12px;border:1px solid var(--line);box-shadow:0 1px 2px rgba(43,36,30,.06);text-align:center;overflow:hidden;}
   .ptag-num{font-family:var(--font-mono);font-weight:700;font-size:15px;color:var(--gold);line-height:1.2;}
   .ptag-name{font-size:11px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink);}
+  .ptag-big{padding:clamp(14px,2.6vh,32px) 8px;}
+  .ptag-big .ptag-num{font-size:clamp(26px,4.4vw,60px);}
+  .ptag-big .ptag-name{font-size:clamp(16px,2.4vw,32px);margin-top:clamp(4px,0.8vh,10px);}
   .ptag::before{content:"";position:absolute;left:0;top:0;width:100%;height:3px;background:var(--gold);}
   .ranking-result{margin-top:10px;font-size:13px;background:#FBF3DE;border:1px solid var(--gold);border-radius:6px;padding:10px 12px;font-family:var(--font-body);}
 
@@ -136,18 +139,22 @@
     }
   }
   .disp-head{background:linear-gradient(180deg,#8A3542,var(--burgundy));color:#F3E7CE;padding:18px;text-align:center;font-family:var(--font-display);font-weight:700;font-size:24px;letter-spacing:.06em;border-bottom:1px solid rgba(0,0,0,.2);}
-  .disp-body{flex:1;background:var(--paper);overflow-y:auto;padding:20px;}
+  .disp-body{flex:1;background:var(--paper);overflow-y:auto;padding:20px;display:flex;flex-direction:column;}
   .disp-tabs{display:flex;justify-content:center;gap:10px;}
   .disp-tabs .d{width:9px;height:9px;border-radius:50%;background:rgba(243,231,206,.35);}
   .disp-tabs .d.on{background:var(--gold);}
   .disp-bottombar{display:flex;align-items:center;justify-content:space-between;background:var(--burgundy);padding:12px 16px;border-top:1px solid rgba(0,0,0,.2);}
   .disp-menu-btn{background:rgba(0,0,0,.2);color:#F3E7CE;border:1px solid rgba(243,231,206,.4);border-radius:6px;padding:8px 16px;font-family:var(--font-mono);font-size:12px;letter-spacing:.03em;width:auto;}
-  .podium-row{display:flex;justify-content:center;align-items:flex-end;gap:14px;margin-top:24px;flex-wrap:wrap;}
-  .podium-card{text-align:center;padding:20px 16px;border-radius:8px;background:#fff;border:1px solid var(--line);border-top:4px solid var(--sub);min-width:120px;box-shadow:0 2px 6px rgba(43,36,30,.08);}
-  .p1{border-top-color:var(--gold);order:2;padding-top:28px;}
+  .podium-fullscreen{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;width:100%;}
+  .podium-title{text-align:center;font-family:var(--font-display);font-weight:700;color:var(--burgundy);font-size:clamp(28px,5vw,64px);margin-bottom:clamp(20px,5vh,56px);letter-spacing:.04em;}
+  .podium-row{display:flex;justify-content:center;align-items:flex-end;gap:clamp(14px,3vw,40px);flex-wrap:wrap;}
+  .podium-card{text-align:center;padding:clamp(20px,3vh,44px) clamp(16px,3vw,36px);border-radius:10px;background:#fff;border:1px solid var(--line);border-top:6px solid var(--sub);min-width:clamp(130px,18vw,240px);box-shadow:0 4px 14px rgba(43,36,30,.12);}
+  .p1{border-top-color:var(--gold);order:2;padding-top:clamp(28px,4.5vh,60px);}
   .p2{border-top-color:#9AA3B2;order:1;}
   .p3{border-top-color:#B0755A;order:3;}
-  .medal{font-size:40px;}
+  .medal{font-size:clamp(40px,7vw,96px);line-height:1;}
+  .podium-name{font-weight:800;font-family:var(--font-display);font-size:clamp(20px,3.2vw,40px);margin-top:clamp(6px,1vh,14px);}
+  .podium-sub{color:var(--sub);font-size:clamp(14px,2vw,24px);margin-top:clamp(2px,0.5vh,6px);}
   .grid-match{display:grid;grid-template-columns:1fr;gap:12px;}
   @media(min-width:420px){ .grid-match.two{grid-template-columns:1fr 1fr;} }
   .next-card{background:#fff;border:1px solid var(--line);border-radius:8px;padding:14px 14px 14px 18px;position:relative;box-shadow:0 1px 3px rgba(43,36,30,.06);}
@@ -1044,12 +1051,14 @@ function renderTournament(){
   currentMatches.forEach(m => list.appendChild(renderMatchCard(m)));
 }
 
-function participantGridHtml(numbers){
+function participantGridHtml(numbers, opts={}){
+  const cols = opts.columns || numbers.length;
+  const cellClass = opts.big ? "ptag ptag-big" : "ptag";
   const cells = numbers.map(n=>{
     const nm = pname(n);
-    return `<div class="ptag"><div class="ptag-num">${n}</div><div class="ptag-name">${nm||''}</div></div>`;
+    return `<div class="${cellClass}"><div class="ptag-num">${n}</div><div class="ptag-name">${nm||''}</div></div>`;
   }).join("");
-  return `<div class="plist" style="grid-template-columns:repeat(${numbers.length},1fr);">${cells}</div>`;
+  return `<div class="plist" style="grid-template-columns:repeat(${cols},1fr);">${cells}</div>`;
 }
 
 function renderMatchCard(match){
@@ -1224,36 +1233,44 @@ function renderDisplay(){
     const gf = state.matches.find(m=>m.roundType==="GRAND_FINAL"&&m.status==="COMPLETED");
     const topThree = gf ? gf.rankings.slice(0,3) : [];
 
-    if (current.length > 0) {
-      body.innerHTML = `<div style="font-size:20px;font-weight:800;color:var(--red);margin-bottom:10px;">現在の試合（${current.length}試合）</div>
-        <div class="grid-match ${current.length>1?'two':''}"></div>`;
-      const grid = body.querySelector(".grid-match");
-      current.slice(0,2).forEach(m => {
-        const c = el(`<div class="match-card"></div>`);
-        c.innerHTML = `<div class="mid" style="font-size:18px;">${m.id}</div>${participantGridHtml(m.participants)}`;
-        grid.appendChild(c);
-      });
-    } else if (state.champion !== null && topThree.length >= 1) {
+    if (state.champion !== null && topThree.length >= 1) {
       body.innerHTML = "";
-      body.appendChild(el(`<div style="text-align:center;font-size:28px;font-weight:800;color:var(--red);">🏆 表彰台 🏆</div>`));
+      const wrap = el(`<div class="podium-fullscreen"></div>`);
+      wrap.appendChild(el(`<div class="podium-title">🏆 表彰台 🏆</div>`));
       const row = el(`<div class="podium-row"></div>`);
       const medals = ["🥇","🥈","🥉"];
       const order = [1,0,2].filter(i => topThree[i] !== undefined); // 2位,1位,3位の順で表示(存在するものだけ)
       order.forEach(i => {
         const num = topThree[i];
-        const div = el(`<div class="podium-card p${i+1}"><div class="medal">${medals[i]}</div><div style="font-weight:800;font-size:20px;">${pname(num)||('No.'+num)}</div><div class="muted">No.${num}</div></div>`);
+        const div = el(`<div class="podium-card p${i+1}"><div class="medal">${medals[i]}</div><div class="podium-name">${pname(num)||('No.'+num)}</div><div class="podium-sub">No.${num}</div></div>`);
         row.appendChild(div);
       });
-      body.appendChild(row);
-    } else if (next.length > 0) {
-      body.innerHTML = `<div style="font-size:20px;font-weight:800;color:var(--cyan);margin-bottom:10px;">次の対戦</div>`;
-      next.forEach(m => {
-        const c = el(`<div class="next-card" style="margin-bottom:10px;"></div>`);
-        c.innerHTML = `<div style="font-weight:700;">${m.id}</div>${participantGridHtml(m.participants)}`;
-        body.appendChild(c);
-      });
-    } else {
+      wrap.appendChild(row);
+      body.appendChild(wrap);
+    } else if (current.length === 0 && next.length === 0) {
       body.innerHTML = `<div class="empty">大会開始をお待ちください</div>`;
+    } else {
+      body.innerHTML = "";
+      if (current.length > 0) {
+        body.appendChild(el(`<div style="font-size:clamp(18px,2.6vw,28px);font-weight:800;color:var(--burgundy);margin-bottom:14px;">現在の試合（${current.length}試合）</div>`));
+        const gridCur = el(`<div class="grid-match ${current.length>1?'two':''}" style="margin-bottom:${next.length?'32px':'0'};"></div>`);
+        current.slice(0,2).forEach(m => {
+          const c = el(`<div class="match-card"></div>`);
+          c.innerHTML = `<div class="mid" style="font-size:clamp(18px,2.4vw,26px);">${m.id}</div>${participantGridHtml(m.participants, {columns:2, big:true})}`;
+          gridCur.appendChild(c);
+        });
+        body.appendChild(gridCur);
+      }
+      if (next.length > 0) {
+        body.appendChild(el(`<div style="font-size:clamp(14px,1.8vw,20px);font-weight:800;color:var(--steel);margin-bottom:10px;">次の対戦</div>`));
+        const gridNext = el(`<div class="grid-match ${next.length>1?'two':''}"></div>`);
+        next.forEach(m => {
+          const c = el(`<div class="next-card"></div>`);
+          c.innerHTML = `<div style="font-weight:700;">${m.id}</div>${participantGridHtml(m.participants, {columns:m.participants.length})}`;
+          gridNext.appendChild(c);
+        });
+        body.appendChild(gridNext);
+      }
     }
   } else {
     const total = state.matches.length;
