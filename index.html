@@ -1026,14 +1026,22 @@ function renderTournament(){
     list.innerHTML = `<div class="empty">大会を開始すると試合が表示されます</div>`;
     return;
   }
-  // 現在フェーズの試合を先頭に
+  // 現在進行中のステージの試合のみを表示（完了したステージは非表示）
   const roundType = ROUND_FOR_PHASE[state.phase];
-  const sorted = [...state.matches].sort((a,b)=>{
-    const aCur = a.roundType===roundType ? 0 : 1;
-    const bCur = b.roundType===roundType ? 0 : 1;
-    return aCur - bCur;
-  });
-  sorted.forEach(m => list.appendChild(renderMatchCard(m)));
+  let currentMatches;
+  if (roundType === "SEMI_FINAL") {
+    currentMatches = latestRoundMatches("SEMI_FINAL");
+  } else if (roundType) {
+    currentMatches = state.matches.filter(m=>m.roundType===roundType);
+  } else {
+    // 大会終了後(表彰式/完了)は決勝の結果を表示
+    currentMatches = state.matches.filter(m=>m.roundType==="GRAND_FINAL");
+  }
+  if (currentMatches.length === 0) {
+    list.innerHTML = `<div class="empty">表示する試合がありません</div>`;
+    return;
+  }
+  currentMatches.forEach(m => list.appendChild(renderMatchCard(m)));
 }
 
 function participantGridHtml(numbers){
