@@ -1262,11 +1262,15 @@ function renderDisplay(){
         body.appendChild(gridCur);
       }
       if (next.length > 0) {
-        body.appendChild(el(`<div style="font-size:clamp(14px,1.8vw,20px);font-weight:800;color:var(--steel);margin-bottom:10px;">次の対戦</div>`));
+        const nextIsPrimary = current.length === 0;
+        const headSize = nextIsPrimary ? "clamp(18px,2.6vw,28px)" : "clamp(14px,1.8vw,20px)";
+        body.appendChild(el(`<div style="font-size:${headSize};font-weight:800;color:var(--steel);margin-bottom:${nextIsPrimary?'14px':'10px'};">次の対戦</div>`));
         const gridNext = el(`<div class="grid-match ${next.length>1?'two':''}"></div>`);
         next.forEach(m => {
-          const c = el(`<div class="next-card"></div>`);
-          c.innerHTML = `<div style="font-weight:700;">${m.id}</div>${participantGridHtml(m.participants, {columns:m.participants.length})}`;
+          const c = el(`<div class="${nextIsPrimary?'match-card':'next-card'}"></div>`);
+          const midHtml = nextIsPrimary ? `<div class="mid" style="font-size:clamp(18px,2.4vw,26px);">${m.id}</div>` : `<div style="font-weight:700;">${m.id}</div>`;
+          const cols = nextIsPrimary ? 2 : m.participants.length;
+          c.innerHTML = `${midHtml}${participantGridHtml(m.participants, {columns:cols, big:nextIsPrimary})}`;
           gridNext.appendChild(c);
         });
         body.appendChild(gridNext);
