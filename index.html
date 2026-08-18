@@ -229,7 +229,7 @@ import {
   collection, addDoc, getDocs, deleteDoc, query, orderBy, limit, serverTimestamp
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import {
-  getAuth, GoogleAuthProvider, signInWithRedirect, getRedirectResult,
+  getAuth, GoogleAuthProvider, signInWithRedirect, signInWithPopup, getRedirectResult,
   onAuthStateChanged, signOut
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 
@@ -1369,19 +1369,46 @@ function showApp(){
   appEl.classList.add("show");
 }
 
-loginBtn.onclick = () => {
+loginBtn.onclick = async () => {
   if (!auth) { toast("Firebase未設定です"); return; }
   loginMsgEl.textContent = "ログイン中...";
   loginMsgEl.classList.remove("error");
-  signInWithRedirect(auth, new GoogleAuthProvider()).catch(err=>{
-    console.error(err);
-    showLoginGate("ログインに失敗しました", true);
-  });
+  const provider = new GoogleAuthProvider();
+  try {
+    await signInWithPopup(auth, provider);
+    // 成功時はonAuthStateChangedが検知して画面を切り替える
+  } catch (err) {
+    console.error("popup sign-in failed", err);
+    if (err.code === "auth/popup-closed-by-user" || err.code === "auth/cancelled-popup-request") {
+      loginMsgEl.textContent = "";
+      return;
+    }
+    if (err.code === "auth/popup-blocked" || err.code === "auth/operation-not-supported-in-this-environment") {
+      // ポップアップが使えない環境ではリダイレクト方式にフォールバック
+      loginMsgEl.textContent = "ログイン中...（別ウィンドウ方式に切り替えています）";
+      try {
+        await signInWithRedirect(auth, provider);
+      } catch (err2) {
+        showLoginGate(`ログインに失敗しました（${err2.code || err2.message}）`, true);
+      }
+      return;
+    }
+    showLoginGate(`ログインに失敗しました（${err.code || err.message}）`, true);
+  }
 };
 logoutBtn.onclick = () => { if (auth) signOut(auth).catch(()=>{}); };
 
 if (auth && firebaseReady) {
-  getRedirectResult(auth).catch(err => console.error("redirect result error", err));
+  getRedirectResult(auth).then(result => {
+    if (result && result.user) {
+      console.log("redirect sign-in success:", result.user.email);
+    } else {
+      console.log("redirect result: no pending credential (通常のページ読み込み、またはブラウザがリダイレクト情報を引き継げなかった可能性)");
+    }
+  }).catch(err => {
+    console.error("redirect result error", err);
+    lastAuthError = `ログインに失敗しました（${err.code || err.message}）`;
+  });
   onAuthStateChanged(auth, (user) => {
     if (!user) {
       showLoginGate(lastAuthError);
