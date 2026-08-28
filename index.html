@@ -275,10 +275,13 @@ const HISTORY_COL = () => collection(db, "tournaments_history");
    状態管理
    ============================================================ */
 const defaultState = () => ({
-  mode: 32,
+  mode: "auto",
   startTime: "",
-  phase: "NOT_STARTED", // NOT_STARTED, PRELIMINARY, LOSERS_REVIVAL, MAIN_ROUND, SEMI_FINAL, FINAL, CEREMONY, COMPLETED
-  participants: [], // {number, name}
+  phase: "NOT_STARTED", // NOT_STARTED, PRELIMINARY, LOSERS_REVIVAL, MAIN_ROUND, SEMI_FINAL, BRACKET, FINAL, CEREMONY, COMPLETED
+  engineType: null, // "group" | "hybrid" | "bracket"
+  smallFormat: "full", // "full"(全試合1対1) | "semiOnly"(準決勝以降のみ1対1)　※10人以下の場合に選択
+  bracketPool: [], // bracket方式(1対1)で使う、この大会に参加する全員の番号リスト
+  participants: [], // {number, name, grade, checkedIn, checkedInAt}
   matches: [], // {id, roundType, roundNumber, screenId, participants:[num], status, rankings:[num]}
   champion: null,
   updatedAtLocal: null
@@ -303,6 +306,7 @@ const PHASE_LABEL = {
   LOSERS_REVIVAL: "敗者復活",
   MAIN_ROUND: "本選",
   SEMI_FINAL: "準決勝",
+  BRACKET: "トーナメント",
   FINAL: "決勝",
   CEREMONY: "表彰式",
   COMPLETED: "完了"
@@ -312,6 +316,7 @@ const ROUND_FOR_PHASE = {
   LOSERS_REVIVAL: "LOSERS_REVIVAL",
   MAIN_ROUND: "MAIN_ROUND",
   SEMI_FINAL: "SEMI_FINAL",
+  BRACKET: "BRACKET",
   FINAL: "GRAND_FINAL"
 };
 
@@ -431,7 +436,26 @@ function shuffled(arr){
 }
 
 function startTournament(){
-  generateMatches(state.mode);
+  const pool = state.participants.filter(p => p.checkedIn).map(p => p.number);
+  if (pool.length === 0) { toast("受付済みの参加者がいません（先に「受付」タブで受付してください）"); return; }
+  const cap = [32,24,16].includes(state.mode) ? state.mode : null;
+  let selected = pool;
+  if (cap && pool.length > cap) {
+    selected = shuffled(pool).slice(0, cap);
+  } else if (cap && pool.length < cap) {
+    toast(`受付人数が${cap}人未満のため、${pool.length}人で大会を開始します`);
+  }
+  state.matches = [];
+  state.champion = null;
+  if (selected.length <= 10) {
+    if (state.smallFormat === "semiOnly") {
+      startHybridTournament(selected);
+    } else {
+      startBracketTournament(selected);
+    }
+  } else {
+    startGroupTournament(selected);
+  }
 }
 
 function pairKey(a,b){ return a<b ? a+","+b : b+","+a; }
@@ -459,7 +483,7 @@ function scoreGrouping(groups, historySet){
   return score;
 }
 
-// 人数が4の倍数でない場合に、3人組を交ぜて調整するグループサイズ配列を作る
+// 人数が4の倍数でない場合に、3人組を交ぜて調整するグループサイズ配列を作る（11人以上のグループ方式のみで使用）
 function splitIntoGroupSizes(n){
   if (n <= 4) return n > 0 ? [n] : [];
   const q = Math.floor(n / 4);
@@ -481,7 +505,7 @@ function chunkBySizes(arr, sizes){
 }
 
 // 敗者戦も含め、既に対戦したことがある組み合わせをできるだけ避けてグループ分けする
-// (人数が4の倍数でない場合は3人組を交ぜて調整する)
+// (人数が4の倍数でない場合は3人組を交ぜて調整する)　※11人以上のグループ方式のみで使用
 function groupMinimizingRematches(numbers, historySet){
   const sizes = splitIntoGroupSizes(numbers.length);
   let best = chunkBySizes(shuffled(numbers), sizes);
@@ -495,17 +519,13 @@ function groupMinimizingRematches(numbers, historySet){
   return best;
 }
 
-function generateMatches(mode){
-  const named = state.participants.filter(p => p.name && p.name.trim() !== "");
-  if (named.length === 0) { toast("参加者を登録してください"); return; }
-  const count = [32,24,16].includes(mode) ? mode : null;
-  if (!count) return;
-  const pool = shuffled(named).slice(0, Math.min(count, named.length)).map(p=>p.number);
-  if (pool.length < count) {
-    toast(`登録人数が${count}人未満のため、${pool.length}人で大会を開始します`);
-  }
+/* ------------------------------------------------------------
+   グループ方式（11人以上）：予選(3〜4人組)→敗者復活→本選→準決勝→決勝
+   ------------------------------------------------------------ */
+function startGroupTournament(selected){
+  state.engineType = "group";
   const historySet = buildPairHistorySet();
-  const groups = groupMinimizingRematches(pool, historySet);
+  const groups = groupMinimizingRematches(selected, historySet);
   const matches = groups.map((grp, i) => ({
     id: `予選R${i+1}`,
     roundType: "PRELIMINARY",
@@ -518,6 +538,127 @@ function generateMatches(mode){
   state.matches = matches;
   state.phase = "PRELIMINARY";
   persist();
+}
+
+// hybrid方式（10人以下・「準決勝以降のみ1対1」を選んだ場合）：
+// 予選・敗者復活・本選はグループ方式(group)と全く同じ。準決勝以降だけ1対1にする。
+function startHybridTournament(selected){
+  state.engineType = "hybrid";
+  const historySet = buildPairHistorySet();
+  const groups = groupMinimizingRematches(selected, historySet);
+  const matches = groups.map((grp, i) => ({
+    id: `予選R${i+1}`,
+    roundType: "PRELIMINARY",
+    roundNumber: i+1,
+    screenId: `予選R1-${letterFor(i)}`,
+    participants: grp,
+    status: "PENDING",
+    rankings: []
+  }));
+  state.matches = matches;
+  state.phase = "PRELIMINARY";
+  persist();
+}
+
+/* ------------------------------------------------------------
+   ブラケット方式（10人以下）：全試合1対1、2敗するまで敗退しない
+   （＝全員が最低2試合を消化できる。敗者復活を内包した方式）
+   ------------------------------------------------------------ */
+function startBracketTournament(selected){
+  state.engineType = "bracket";
+  state.bracketPool = selected;
+  progressBracket();
+}
+
+// bracket方式でのある参加者の敗数（BRACKET試合のみ集計。不戦勝は敗数にカウントしない）
+function computeBracketLosses(){
+  const losses = {};
+  state.matches.filter(m=>m.roundType==="BRACKET" && m.status==="COMPLETED" && m.participants.length===2).forEach(m=>{
+    const loser = m.rankings[1];
+    losses[loser] = (losses[loser]||0) + 1;
+  });
+  return losses;
+}
+
+// bracket方式で、まだ2敗していない（＝勝ち残っている）参加者一覧
+function bracketActivePool(){
+  const losses = computeBracketLosses();
+  return (state.bracketPool||[]).filter(n => (losses[n]||0) < 2);
+}
+
+// bracket方式の次の1ラウンドを生成する（勝ち残りが2名になれば決勝へ）
+function progressBracket(){
+  const active = bracketActivePool();
+  if (active.length <= 2) {
+    finishBracketToFinal(active);
+    persist();
+    return;
+  }
+  const historySet = buildPairHistorySet();
+  // 不戦勝は「これまでの実試合数が多い人」を優先（実試合が少ない人に不戦勝を割り当てて
+  // 最低2試合の消化が遅れるのを防ぐ）
+  const matchCounts = {};
+  state.matches.filter(m=>m.roundType==="BRACKET" && m.status==="COMPLETED" && m.participants.length===2).forEach(m=>{
+    m.participants.forEach(n=>{ matchCounts[n] = (matchCounts[n]||0) + 1; });
+  });
+  let pairPool = shuffled(active);
+  let bye = null;
+  if (pairPool.length % 2 === 1) {
+    pairPool.sort((a,b)=> (matchCounts[b]||0) - (matchCounts[a]||0));
+    bye = pairPool.shift();
+  }
+  let bestPairs = null, bestScore = Infinity;
+  const attempts = pairPool.length <= 10 ? 300 : 100;
+  for (let a=0; a<attempts && bestScore>0; a++){
+    const arr = shuffled(pairPool);
+    const pairs = [];
+    for (let i=0;i<arr.length;i+=2) pairs.push([arr[i], arr[i+1]]);
+    const score = pairs.reduce((s,p)=> s + (historySet.has(pairKey(p[0],p[1])) ? 1 : 0), 0);
+    if (score < bestScore){ bestScore = score; bestPairs = pairs; }
+  }
+  const existingRounds = state.matches.filter(m=>m.roundType==="BRACKET").map(m=>m.roundNumber);
+  const roundNumber = existingRounds.length ? Math.max(...existingRounds) + 1 : 1;
+  const newMatches = bestPairs.map((pair,i)=>({
+    id: `第${roundNumber}回戦R${i+1}`,
+    roundType: "BRACKET",
+    roundNumber,
+    screenId: `第${roundNumber}回戦-${letterFor(i)}`,
+    participants: pair,
+    status: "PENDING",
+    rankings: []
+  }));
+  if (bye !== null) {
+    newMatches.push({
+      id: `第${roundNumber}回戦(不戦勝)`,
+      roundType: "BRACKET",
+      roundNumber,
+      screenId: `第${roundNumber}回戦-BYE`,
+      participants: [bye],
+      status: "COMPLETED",
+      rankings: [bye]
+    });
+  }
+  state.matches = [...state.matches, ...newMatches];
+  state.phase = "BRACKET";
+  persist();
+}
+
+function finishBracketToFinal(active){
+  if (active.length === 2) {
+    // 直前のラウンドがちょうど2試合(4名)だった場合は、その敗者同士で3位決定戦を作る
+    const latest = latestRoundMatches("BRACKET");
+    const realMatches = latest.filter(m=>m.participants.length===2);
+    if (realMatches.length === 2) {
+      const losers = realMatches.map(m=>m.rankings[1]);
+      generateThirdPlaceMatch(losers);
+    }
+    generateGrandFinal(active);
+  } else if (active.length === 1) {
+    // 極端な少人数などで1名だけ残った場合はそのまま優勝とする
+    state.champion = active[0];
+    state.phase = "CEREMONY";
+    saveTournamentToHistory();
+  }
 }
 
 function startMatch(matchId){
@@ -544,30 +685,23 @@ const NEXT_STAGE_LABEL = {
   FINAL: "結果を確定する"
 };
 
-// この大会の総参加人数（予選の参加者数の合計）。10人以下なら準決勝・決勝を1対1にする
-function tournamentParticipantCount(){
-  return state.matches.filter(m=>m.roundType==="PRELIMINARY").reduce((sum,m)=>sum+m.participants.length, 0);
-}
-function isSmallTournament(){
-  const n = tournamentParticipantCount();
-  return n > 0 && n <= 10;
-}
-
-// 直近のSEMI_FINAL/MAIN_ROUNDの勝者数を見て、ボタンの文言を決める
-// (人数によっては準決勝を複数回繰り返して4人(または1対1なら2人)まで絞り込むため)
+// 直近のSEMI_FINAL/MAIN_ROUNDの勝者数や、BRACKET方式の勝ち残り数を見てボタンの文言を決める
 function getNextStageLabel(){
-  const smallMode = isSmallTournament();
   if (state.phase === "MAIN_ROUND") {
     const main = state.matches.filter(m=>m.roundType==="MAIN_ROUND");
     const winners = main.flatMap(m=>m.rankings.slice(0,2));
-    const threshold = smallMode ? 2 : 4;
+    const threshold = state.engineType === "hybrid" ? 2 : 4;
     return winners.length <= threshold ? "決勝ステージへ進む" : "準決勝ステージへ進む";
   }
   if (state.phase === "SEMI_FINAL") {
-    const perMatch = smallMode ? 1 : 2;
+    const perMatch = state.engineType === "hybrid" ? 1 : 2;
+    const threshold = state.engineType === "hybrid" ? 2 : 4;
     const winners = latestRoundMatches("SEMI_FINAL").flatMap(m=>m.rankings.slice(0,perMatch));
-    const threshold = smallMode ? 2 : 4;
     return winners.length <= threshold ? "決勝ステージへ進む" : "準決勝を続ける（絞り込み）";
+  }
+  if (state.phase === "BRACKET") {
+    const active = bracketActivePool();
+    return active.length <= 2 ? "決勝ステージへ進む" : "次のラウンドへ進む";
   }
   return NEXT_STAGE_LABEL[state.phase];
 }
@@ -586,22 +720,18 @@ function advanceToNextPhase(){
   else if (state.phase === "MAIN_ROUND") {
     const main = state.matches.filter(m=>m.roundType==="MAIN_ROUND");
     const winners = main.flatMap(m=>m.rankings.slice(0,2));
-    proceedTowardFinal(winners);
+    if (state.engineType === "hybrid") proceedTowardFinalOneVOne(winners);
+    else proceedTowardFinalGroup(winners);
   }
   else if (state.phase === "SEMI_FINAL") {
-    const smallMode = isSmallTournament();
-    const latest = latestRoundMatches("SEMI_FINAL");
-    const perMatch = smallMode ? 1 : 2;
-    const winners = latest.flatMap(m=>m.rankings.slice(0,perMatch));
-    // 1対1方式で決勝に進む2名が確定した場合、直前の準決勝が2試合(1対1×2)なら敗者同士で3位決定戦を作る
-    if (smallMode && winners.length === 2) {
-      const realMatches = latest.filter(m=>m.participants.length===2);
-      if (realMatches.length === 2) {
-        const losers = realMatches.map(m=>m.rankings[1]);
-        generateThirdPlaceMatch(losers);
-      }
-    }
-    proceedTowardFinal(winners);
+    const perMatch = state.engineType === "hybrid" ? 1 : 2;
+    const winners = latestRoundMatches("SEMI_FINAL").flatMap(m=>m.rankings.slice(0,perMatch));
+    if (state.engineType === "hybrid") proceedTowardFinalOneVOne(winners);
+    else proceedTowardFinalGroup(winners);
+  }
+  else if (state.phase === "BRACKET") {
+    progressBracket();
+    return; // progressBracket内でpersist済み
   }
   else if (state.phase === "FINAL") completeTournament();
   persist();
@@ -647,7 +777,7 @@ function generateMainRoundMatches(){
 }
 
 // 準決勝の絞り込み専用：人数が5〜8人ならちょうど2組に分け、上位2名ずつ(計4名)で決勝へ
-// 9人以上ならいつもの3人/4人混在ルールで、必要なら準決勝を複数回繰り返す
+// 9人以上ならいつもの3人/4人混在ルールで、必要なら準決勝を複数回繰り返す　※グループ方式(11人以上)専用
 function splitForSemiReduction(n){
   if (n <= 4) return n > 0 ? [n] : [];
   if (n <= 8) {
@@ -658,9 +788,31 @@ function splitForSemiReduction(n){
   return splitIntoGroupSizes(n);
 }
 
-// 総参加人数10人以下の場合、準決勝・決勝を1対1のトーナメント方式で組む
-function proceedTowardFinalSmallMode(pool){
+function generateThirdPlaceMatch(losers){
+  if (losers.length !== 2) return;
+  state.matches = [...state.matches, {
+    id: "3位決定戦",
+    roundType: "THIRD_PLACE",
+    roundNumber: 1,
+    screenId: "3位決定戦",
+    participants: losers,
+    status: "PENDING",
+    rankings: []
+  }];
+}
+
+// hybrid方式（10人以下・「準決勝以降のみ1対1」を選んだ場合）専用：
+// 準決勝以降を1対1のトーナメントにする（必要なら複数回戦繰り返し、2名になったら決勝＋3位決定戦）
+function proceedTowardFinalOneVOne(pool){
   if (pool.length <= 2) {
+    if (pool.length === 2) {
+      const latest = latestRoundMatches("SEMI_FINAL");
+      const realMatches = latest.filter(m=>m.participants.length===2);
+      if (realMatches.length === 2) {
+        const losers = realMatches.map(m=>m.rankings[1]);
+        generateThirdPlaceMatch(losers);
+      }
+    }
     generateGrandFinal(pool);
     return;
   }
@@ -692,7 +844,6 @@ function proceedTowardFinalSmallMode(pool){
     rankings: []
   }));
   if (bye !== null) {
-    // 対戦相手がいない場合は不戦勝として自動的に勝ち上がる
     newMatches.push({
       id: `${label}(不戦勝)`,
       roundType: "SEMI_FINAL",
@@ -707,26 +858,8 @@ function proceedTowardFinalSmallMode(pool){
   state.phase = "SEMI_FINAL";
 }
 
-function generateThirdPlaceMatch(losers){
-  if (losers.length !== 2) return;
-  state.matches = [...state.matches, {
-    id: "3位決定戦",
-    roundType: "THIRD_PLACE",
-    roundNumber: 1,
-    screenId: "3位決定戦",
-    participants: losers,
-    status: "PENDING",
-    rankings: []
-  }];
-}
-
-// 決勝が必ず4人になるよう、人数に応じて準決勝を挟むか・繰り返すかを決める
-// (総参加人数10人以下の場合は1対1方式にする)
-function proceedTowardFinal(pool){
-  if (isSmallTournament()) {
-    proceedTowardFinalSmallMode(pool);
-    return;
-  }
+// 決勝が必ず4人になるよう、人数に応じて準決勝を挟むか・繰り返すかを決める　※グループ方式(11人以上)専用
+function proceedTowardFinalGroup(pool){
   if (pool.length <= 4) {
     generateGrandFinal(pool);
     return;
@@ -802,6 +935,16 @@ function computeParticipantRecord(number){
   let status;
   if (state.champion === number) {
     status = "優勝";
+  } else if (state.engineType === "bracket") {
+    const lastMatch = relevant[relevant.length - 1];
+    if (lastMatch.roundType === "THIRD_PLACE") {
+      status = lastMatch.rankings.indexOf(number) === 0 ? "3位" : "敗退";
+    } else if (lastMatch.roundType === "GRAND_FINAL") {
+      status = "敗退"; // 準優勝
+    } else {
+      const losses = relevant.filter(m => m.roundType==="BRACKET" && m.participants.length===2 && m.rankings.indexOf(number)===1).length;
+      status = losses >= 2 ? "敗退" : "勝ち上がり中";
+    }
   } else {
     const lastMatch = relevant[relevant.length - 1];
     const lastRank = lastMatch.rankings.indexOf(number);
@@ -841,6 +984,8 @@ function clearTournamentData(){
   state.phase = "NOT_STARTED";
   state.matches = [];
   state.champion = null;
+  state.engineType = null;
+  state.bracketPool = [];
   persist();
 }
 
@@ -862,6 +1007,9 @@ function persist(){
         mode: state.mode,
         startTime: state.startTime,
         phase: state.phase,
+        engineType: state.engineType,
+        smallFormat: state.smallFormat,
+        bracketPool: state.bracketPool,
         participants: state.participants,
         matches: state.matches,
         champion: state.champion,
@@ -882,6 +1030,9 @@ async function saveTournamentToHistory(){
     await addDoc(HISTORY_COL(), {
       mode: state.mode,
       phase: state.phase,
+      engineType: state.engineType,
+      smallFormat: state.smallFormat,
+      bracketPool: state.bracketPool,
       participants: state.participants,
       matches: state.matches,
       champion: state.champion,
@@ -906,9 +1057,12 @@ async function deleteHistoryItem(id){
 }
 
 function loadHistoryIntoState(item){
-  state.mode = item.mode || 32;
+  state.mode = item.mode || 'auto';
   state.startTime = item.startTime || "";
   state.phase = item.phase;
+  state.engineType = item.engineType || null;
+  state.smallFormat = item.smallFormat || "full";
+  state.bracketPool = item.bracketPool || [];
   state.participants = item.participants || [];
   state.matches = item.matches || [];
   state.champion = item.champion || null;
@@ -948,6 +1102,9 @@ function subscribeRealtime(){
       state.mode = d.mode ?? state.mode;
       state.startTime = d.startTime ?? state.startTime;
       state.phase = d.phase ?? state.phase;
+      state.engineType = d.engineType ?? state.engineType;
+      state.smallFormat = d.smallFormat ?? state.smallFormat;
+      state.bracketPool = d.bracketPool ?? state.bracketPool;
       state.participants = d.participants ?? state.participants;
       state.matches = d.matches ?? state.matches;
       state.champion = d.champion ?? state.champion;
@@ -983,6 +1140,9 @@ function importData(file){
         state.mode = data.current.mode ?? state.mode;
         state.startTime = data.current.startTime ?? state.startTime;
         state.phase = data.current.phase ?? state.phase;
+        state.engineType = data.current.engineType ?? state.engineType;
+        state.smallFormat = data.current.smallFormat ?? state.smallFormat;
+        state.bracketPool = data.current.bracketPool ?? state.bracketPool;
         state.participants = data.current.participants ?? state.participants;
         state.matches = data.current.matches ?? state.matches;
         state.champion = data.current.champion ?? state.champion;
@@ -1038,9 +1198,29 @@ function el(html){
 
 function renderHome(){
   const main = document.getElementById("main");
-  const prelimWinners = state.matches.filter(m=>m.roundType==="PRELIMINARY"&&m.status==="COMPLETED").flatMap(m=>m.rankings.slice(0,2));
-  const revived = state.matches.filter(m=>m.roundType==="LOSERS_REVIVAL"&&m.status==="COMPLETED").flatMap(m=>m.rankings.slice(0,2));
-  const finalists = state.matches.filter(m=>m.roundType==="MAIN_ROUND"&&m.status==="COMPLETED").flatMap(m=>m.rankings.slice(0,2));
+  const checkedCount = checkedInParticipants().length;
+
+  let flowCardHtml;
+  if (state.engineType === "bracket") {
+    flowCardHtml = renderBracketProgressCard();
+  } else if (state.engineType === "group" || state.engineType === "hybrid") {
+    const isHybrid = state.engineType === "hybrid";
+    const prelimWinners = state.matches.filter(m=>m.roundType==="PRELIMINARY"&&m.status==="COMPLETED").flatMap(m=>m.rankings.slice(0,2));
+    const revived = state.matches.filter(m=>m.roundType==="LOSERS_REVIVAL"&&m.status==="COMPLETED").flatMap(m=>m.rankings.slice(0,2));
+    const finalists = state.matches.filter(m=>m.roundType==="MAIN_ROUND"&&m.status==="COMPLETED").flatMap(m=>m.rankings.slice(0,2));
+    flowCardHtml = `
+      <div class="card">
+        <h2>進行フロー</h2>
+        ${phaseItemHtml('1. 予選', `上位2名が通過`, 'PRELIMINARY', prelimWinners)}
+        ${phaseItemHtml('2. 敗者復活', '予選敗者から上位2名が復活', 'LOSERS_REVIVAL', revived)}
+        ${phaseItemHtml('3. 本選', '通過者+復活者で再抽選｜上位2名が通過', 'MAIN_ROUND', finalists)}
+        ${phaseItemHtml('4. 準決勝', isHybrid ? '1対1形式（必要なら複数回戦）｜勝者が決勝進出' : '本選通過者による対戦｜上位2名が決勝進出', 'SEMI_FINAL', [])}
+        ${phaseItemHtml('5. 決勝', isHybrid ? '1対1の最終決戦（3位決定戦あり）' : '最終決戦', 'FINAL', [])}
+      </div>
+    `;
+  } else {
+    flowCardHtml = "";
+  }
 
   main.innerHTML = `
     <div class="card">
@@ -1049,31 +1229,36 @@ function renderHome(){
         <span class="pill ${state.phase==='NOT_STARTED'?'pill-wait':(state.phase==='COMPLETED'||state.phase==='CEREMONY'?'pill-done':'pill-active')}">${PHASE_LABEL[state.phase]}</span>
       </div>
       <div class="row" style="margin-top:10px;">
-        <span class="muted">大会モード</span>
+        <span class="muted">受付済み人数</span>
+        <span style="font-weight:700;font-family:var(--font-display);font-size:18px;">${checkedCount}名</span>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <span class="muted">大会モード（上限人数）</span>
         <select id="modeSelect" ${state.phase!=='NOT_STARTED'?'disabled':''}>
-          <option value="32" ${state.mode===32?'selected':''}>32人</option>
-          <option value="24" ${state.mode===24?'selected':''}>24人</option>
-          <option value="16" ${state.mode===16?'selected':''}>16人</option>
+          <option value="auto" ${state.mode==='auto'?'selected':''}>自動（受付人数どおり）</option>
+          <option value="32" ${state.mode===32?'selected':''}>32人まで</option>
+          <option value="24" ${state.mode===24?'selected':''}>24人まで</option>
+          <option value="16" ${state.mode===16?'selected':''}>16人まで</option>
         </select>
       </div>
       <div class="row">
         <span class="muted">開始時刻</span>
         <input type="time" id="startTimeInput" value="${state.startTime||''}" style="width:140px;">
       </div>
-      ${state.phase==='NOT_STARTED' ? `<div style="margin-top:12px;"><button class="btn btn-primary" id="startBtn">大会を開始</button></div>` : ''}
+      <div class="field-group" style="margin-top:10px;">
+        <label class="field">10人以下の場合の方式</label>
+        <select id="smallFormatSelect" ${state.phase!=='NOT_STARTED'?'disabled':''}>
+          <option value="full" ${state.smallFormat==='full'?'selected':''}>全試合1対1（最低2試合を保証）</option>
+          <option value="semiOnly" ${state.smallFormat==='semiOnly'?'selected':''}>準決勝以降のみ1対1（予選は3〜4人組）</option>
+        </select>
+      </div>
+      ${state.phase==='NOT_STARTED' ? `<div style="margin-top:4px;"><button class="btn btn-primary" id="startBtn">大会を開始</button></div>` : ''}
       ${state.phase!=='NOT_STARTED' ? `<div class="btn-row" style="margin-top:12px;">
           <button class="btn btn-ghost" id="clearDataBtn">大会データをクリア</button>
         </div>` : ''}
     </div>
 
-    <div class="card">
-      <h2>進行フロー</h2>
-      ${phaseItemHtml('1. 予選', `上位2名が通過`, 'PRELIMINARY', prelimWinners)}
-      ${phaseItemHtml('2. 敗者復活', '予選敗者から上位2名が復活', 'LOSERS_REVIVAL', revived)}
-      ${phaseItemHtml('3. 本選', '通過者+復活者で再抽選｜上位2名が通過', 'MAIN_ROUND', finalists)}
-      ${phaseItemHtml('4. 準決勝', '本選通過者による対戦｜上位2名が決勝進出', 'SEMI_FINAL', [])}
-      ${phaseItemHtml('5. 決勝', '最終決戦', 'FINAL', [])}
-    </div>
+    ${flowCardHtml}
     ${state.champion !== null ? renderPodiumSummaryCard() : ''}
 
     <div class="card">
@@ -1081,13 +1266,36 @@ function renderHome(){
     </div>
   `;
 
-  document.getElementById("modeSelect").onchange = (e)=>{ state.mode = parseInt(e.target.value,10); persist(); };
+  document.getElementById("modeSelect").onchange = (e)=>{ state.mode = e.target.value==='auto' ? 'auto' : parseInt(e.target.value,10); persist(); };
   document.getElementById("startTimeInput").onchange = (e)=>{ state.startTime = e.target.value; persist(); };
+  document.getElementById("smallFormatSelect").onchange = (e)=>{ state.smallFormat = e.target.value; persist(); };
   const startBtn = document.getElementById("startBtn");
   if (startBtn) startBtn.onclick = () => { startTournament(); switchTab("tournament"); };
   const clearBtn = document.getElementById("clearDataBtn");
-  if (clearBtn) clearBtn.onclick = () => { if(confirm("大会データ（試合結果）をクリアしますか？参加者は保持されます。")) clearTournamentData(); };
+  if (clearBtn) clearBtn.onclick = () => { if(confirm("大会データ（試合結果）をクリアしますか？参加者・受付情報は保持されます。")) clearTournamentData(); };
   document.getElementById("startNewBtn").onclick = () => { if(confirm("現在の大会データをすべて破棄して新規に開始しますか？")) startNewTournament(); };
+}
+
+// bracket方式（10人以下・全試合1対1）の進行状況カード
+function renderBracketProgressCard(){
+  if (!state.bracketPool || state.bracketPool.length === 0) return "";
+  const active = bracketActivePool();
+  const bracketRounds = state.matches.filter(m=>m.roundType==="BRACKET").map(m=>m.roundNumber);
+  const currentRound = bracketRounds.length ? Math.max(...bracketRounds) : 0;
+  return `
+    <div class="card">
+      <h2>進行状況（全試合1対1）</h2>
+      <div class="muted">2敗するまで敗退しない方式のため、全員が最低2試合を消化できます。</div>
+      <div class="row" style="margin-top:10px;">
+        <span class="muted">現在のラウンド</span>
+        <span style="font-weight:700;">${state.phase==='FINAL'||state.phase==='CEREMONY'||state.phase==='COMPLETED' ? '決勝' : (currentRound>0 ? `第${currentRound}回戦` : '-')}</span>
+      </div>
+      <div class="row" style="margin-top:6px;">
+        <span class="muted">勝ち残り</span>
+        <span style="font-weight:700;">${active.length}名 / 全${state.bracketPool.length}名</span>
+      </div>
+    </div>
+  `;
 }
 
 function phaseItemHtml(title, desc, roundType, winners){
@@ -1349,6 +1557,12 @@ function phaseCaption(){
       const roundNote = rounds > 1 ? `（絞り込み${rounds}回戦）` : "";
       return `${latest.length}試合${roundNote}｜上位2名が決勝進出`;
     }
+    case "BRACKET": {
+      const latest = latestRoundMatches("BRACKET");
+      const real = latest.filter(m=>m.participants.length===2).length;
+      const bye = latest.length - real;
+      return `${real}試合${bye>0?`（不戦勝${bye}名）`:''}｜勝者は次のラウンドへ、初めての敗戦は敗者復活、2敗で敗退`;
+    }
     case "FINAL": {
       const hasThird = state.matches.some(m=>m.roundType==="THIRD_PLACE");
       return hasThird ? `決勝戦（3位決定戦あり）` : `決勝戦`;
@@ -1379,8 +1593,8 @@ function renderTournament(){
   // 現在進行中のステージの試合のみを表示（完了したステージは非表示）
   const roundType = ROUND_FOR_PHASE[state.phase];
   let currentMatches;
-  if (roundType === "SEMI_FINAL") {
-    currentMatches = latestRoundMatches("SEMI_FINAL");
+  if (roundType === "SEMI_FINAL" || roundType === "BRACKET") {
+    currentMatches = latestRoundMatches(roundType);
   } else if (roundType === "GRAND_FINAL") {
     currentMatches = state.matches.filter(m=>m.roundType==="GRAND_FINAL"||m.roundType==="THIRD_PLACE");
   } else if (roundType) {
@@ -1485,10 +1699,13 @@ async function renderHistory(){
   list.forEach(item => {
     const date = item.savedAt && item.savedAt.toDate ? item.savedAt.toDate() : null;
     const dateStr = date ? `${date.getFullYear()}/${String(date.getMonth()+1).padStart(2,'0')}/${String(date.getDate()).padStart(2,'0')} ${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}` : "";
+    const actualCount = item.engineType === 'bracket'
+      ? (item.bracketPool||[]).length
+      : (item.matches||[]).filter(m=>m.roundType==='PRELIMINARY').reduce((s,m)=>s+m.participants.length,0);
     const card = el(`<div class="card"></div>`);
     card.innerHTML = `
       <div class="row"><span class="muted">📅 ${dateStr}</span><span class="pill ${item.phase==='CEREMONY'||item.phase==='COMPLETED'?'pill-done':'pill-active'}">${PHASE_LABEL[item.phase]||''}</span></div>
-      <div style="margin-top:6px;font-weight:700;">${item.mode}人トーナメント</div>
+      <div style="margin-top:6px;font-weight:700;">${actualCount}人トーナメント${item.engineType==='bracket'?'（1対1方式）':''}</div>
       ${item.champion!=null ? `<div style="margin-top:4px;color:var(--red);">🏆 優勝: No.${item.champion} ${(item.participants||[]).find(p=>p.number===item.champion)?.name||''}</div>` : ''}
     `;
     const btnRow = el(`<div class="btn-row" style="margin-top:10px;"></div>`);
