@@ -86,7 +86,9 @@
   label.field{display:block;font-size:11px;color:var(--sub);margin-bottom:4px;letter-spacing:.04em;font-family:var(--font-mono);}
   .field-group{margin-bottom:12px;}
   .name-btn-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;}
-  .name-btn{padding:18px 8px;font-size:15px;min-height:56px;}
+  .name-btn{padding:14px 8px;min-height:56px;flex-direction:column;gap:2px;}
+  .name-btn-nick{font-size:17px;font-weight:700;line-height:1.2;}
+  .name-btn-sub{font-size:11px;font-weight:400;opacity:.7;line-height:1.2;}
   .grade-btn-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;}
   .grade-btn{padding:20px 8px;font-size:16px;}
   .pill{display:inline-block;padding:3px 12px;border-radius:999px;font-family:var(--font-display);font-size:12px;font-weight:700;letter-spacing:.04em;white-space:nowrap;border:1.5px solid currentColor;}
@@ -329,6 +331,10 @@ function pname(n){
   const p = participantByNumber(n);
   return (p && p.name) ? p.name : "";
 }
+function pnickname(n){
+  const p = participantByNumber(n);
+  return (p && p.nickname) ? p.nickname : "";
+}
 
 /* ============================================================
    大会進行ロジック（元Androidアプリのエンジンを移植）
@@ -337,23 +343,26 @@ function initializeParticipants(){
   state.participants = Array.from({length:50}, (_,i)=>({number:i+1, name:""}));
 }
 function clearParticipantNames(){
-  state.participants = state.participants.map(p=>({...p, name:"", checkedIn:false, grade:null, checkedInAt:null}));
+  state.participants = state.participants.map(p=>({...p, name:"", nickname:"", checkedIn:false, grade:null, checkedInAt:null}));
 }
+// CSV形式: 「番号,氏名」の2列、または「番号,ニックネーム,氏名」の3列に対応
 function loadParticipantsFromCsv(text){
   const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
   const parsed = [];
   for (const line of lines) {
-    const parts = line.split(",");
-    if (parts.length >= 2) {
-      const number = parseInt(parts[0].trim(), 10);
-      const name = parts[1].trim();
-      if (!isNaN(number) && number >= 1 && number <= 50) parsed.push({number, name});
+    const parts = line.split(",").map(s=>s.trim());
+    const number = parseInt(parts[0], 10);
+    if (isNaN(number) || number < 1 || number > 50) continue; // ヘッダー行等はスキップ
+    if (parts.length >= 3) {
+      parsed.push({ number, nickname: parts[1], name: parts[2] });
+    } else if (parts.length === 2) {
+      parsed.push({ number, name: parts[1] });
     }
   }
   const existing = [...state.participants];
   for (const p of parsed) {
     const idx = existing.findIndex(e => e.number === p.number);
-    if (idx >= 0) existing[idx] = p; else existing.push(p);
+    if (idx >= 0) existing[idx] = { ...existing[idx], ...p }; else existing.push(p);
   }
   existing.sort((a,b)=>a.number-b.number);
   state.participants = existing;
@@ -405,14 +414,14 @@ function undoCheckIn(number){
 }
 
 function exportReceptionCsv(){
-  const rows = [["番号","名前","学年","受付状況","受付時刻"]];
+  const rows = [["番号","ニックネーム","氏名","学年","受付状況","受付時刻"]];
   const sorted = [...state.participants]
     .filter(p => p.name && p.name.trim() !== "")
     .sort((a,b)=>a.number-b.number);
   sorted.forEach(p=>{
     const time = p.checkedInAt ? new Date(p.checkedInAt) : null;
     const timeStr = time ? `${time.getFullYear()}/${String(time.getMonth()+1).padStart(2,'0')}/${String(time.getDate()).padStart(2,'0')} ${String(time.getHours()).padStart(2,'0')}:${String(time.getMinutes()).padStart(2,'0')}` : "";
-    rows.push([p.number, p.name, p.grade||"", p.checkedIn?"受付済み":"未受付", timeStr]);
+    rows.push([p.number, p.nickname||"", p.name, p.grade||"", p.checkedIn?"受付済み":"未受付", timeStr]);
   });
   const csv = rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(",")).join("\r\n");
   const blob = new Blob(["\uFEFF"+csv], {type:"text/csv"});
@@ -1381,10 +1390,11 @@ function renderReception(){
     listEl.innerHTML = `<div class="muted">まだ受付はありません。</div>`;
   } else {
     checkedList.forEach(p=>{
+      const displayName = p.nickname ? `${p.nickname}（${p.name}）` : p.name;
       const row = el(`<div class="row" style="padding:8px 0;border-bottom:1px dotted var(--line);"></div>`);
-      const info = el(`<div><span style="font-weight:700;">No.${p.number} ${p.name}</span><span class="muted" style="margin-left:8px;">${p.grade||''}</span></div>`);
+      const info = el(`<div><span style="font-weight:700;">No.${p.number} ${displayName}</span><span class="muted" style="margin-left:8px;">${p.grade||''}</span></div>`);
       const undoBtn = el(`<button class="btn btn-ghost" style="width:auto;padding:6px 10px;font-size:11px;">取消</button>`);
-      undoBtn.onclick = () => { if(confirm(`No.${p.number} ${p.name}の受付を取り消しますか？`)){ undoCheckIn(p.number); render(); } };
+      undoBtn.onclick = () => { if(confirm(`No.${p.number} ${displayName}の受付を取り消しますか？`)){ undoCheckIn(p.number); render(); } };
       row.appendChild(info);
       row.appendChild(undoBtn);
       listEl.appendChild(row);
@@ -1411,9 +1421,11 @@ function renderReceptionFlow(){
       grid.innerHTML = `<div class="muted">未受付の登録済み参加者はいません。</div>`;
     } else {
       uncheckedList.forEach(p=>{
-        const btn = el(`<button class="btn btn-ghost name-btn">${p.name}</button>`);
+        const nick = p.nickname || p.name;
+        const sub = p.nickname ? p.name : "";
+        const btn = el(`<button class="btn btn-ghost name-btn"><span class="name-btn-nick">${nick}</span>${sub?`<span class="name-btn-sub">${sub}</span>`:''}</button>`);
         btn.onclick = () => {
-          receptionFlow = { step:"grade", isNew:false, number:p.number, name:p.name, grade:null };
+          receptionFlow = { step:"grade", isNew:false, number:p.number, name:p.name, nickname:p.nickname||"", grade:null };
           renderReceptionFlow();
         };
         grid.appendChild(btn);
@@ -1422,13 +1434,13 @@ function renderReceptionFlow(){
     document.getElementById("newNameNextBtn").onclick = () => {
       const name = document.getElementById("newNameInput").value.trim();
       if (!name) { toast("名前を入力してください"); return; }
-      receptionFlow = { step:"grade", isNew:true, number:null, name, grade:null };
+      receptionFlow = { step:"grade", isNew:true, number:null, name, nickname:"", grade:null };
       renderReceptionFlow();
     };
 
   } else if (receptionFlow.step === "grade") {
     card.innerHTML = `
-      <div class="phase-title" style="margin-bottom:2px;">${receptionFlow.name} さんの学年を選択</div>
+      <div class="phase-title" style="margin-bottom:2px;">${receptionFlow.nickname || receptionFlow.name} さんの学年を選択</div>
       <div class="muted" style="margin-bottom:14px;">${receptionFlow.isNew ? '新規登録' : ''}</div>
       <div class="grade-btn-grid" id="gradeBtnGrid"></div>
       <button class="btn btn-ghost" id="backToSelectBtn" style="margin-top:16px;">戻る</button>
@@ -1446,9 +1458,12 @@ function renderReceptionFlow(){
     document.getElementById("backToSelectBtn").onclick = () => { resetReceptionFlow(); renderReceptionFlow(); };
 
   } else if (receptionFlow.step === "confirm") {
+    const displayName = receptionFlow.nickname
+      ? `${receptionFlow.nickname}<span style="font-size:13px;color:var(--sub);margin-left:8px;">${receptionFlow.name}</span>`
+      : receptionFlow.name;
     card.innerHTML = `
       <div class="phase-title" style="margin-bottom:16px;">受付内容の確認</div>
-      <div class="row"><span class="muted">名前</span><span style="font-weight:700;font-size:19px;">${receptionFlow.name}${receptionFlow.isNew?'（新規登録）':''}</span></div>
+      <div class="row"><span class="muted">名前</span><span style="font-weight:700;font-size:19px;">${displayName}${receptionFlow.isNew?'（新規登録）':''}</span></div>
       <div class="row" style="margin-top:12px;"><span class="muted">学年</span><span style="font-weight:700;font-size:19px;">${receptionFlow.grade}</span></div>
       <button class="btn btn-primary" id="confirmCheckInBtn" style="margin-top:22px;">受付登録する</button>
       <button class="btn btn-ghost" id="backToGradeBtn" style="margin-top:8px;">学年を選び直す</button>
@@ -1479,7 +1494,7 @@ function renderParticipants(){
         <button class="btn btn-ghost" id="clearNamesBtn">名前をクリア</button>
       </div>
       <div class="field-group" style="margin-top:12px;">
-        <label class="field">CSV読込（1行ごとに「番号,名前」）</label>
+        <label class="field">CSV読込（「番号,氏名」または「番号,ニックネーム,氏名」）</label>
         <input type="file" id="csvInput" accept=".csv,text/csv">
       </div>
     </div>
@@ -1502,17 +1517,28 @@ function renderParticipants(){
     const row = el(`<div class="card" style="padding:12px 14px 12px 18px;margin-bottom:8px;"></div>`);
     const top = el(`<div class="row" style="gap:10px;"></div>`);
     const num = el(`<div class="participant-num" style="min-width:30px;">${p.number}</div>`);
-    const inputWrap = el(`<div style="flex:1;"></div>`);
+    const inputWrap = el(`<div style="flex:1;display:flex;flex-direction:column;gap:6px;"></div>`);
     const input = document.createElement("input");
     input.type = "text";
-    input.placeholder = "名前";
+    input.placeholder = "氏名";
     input.value = p.name || "";
     input.oninput = (e) => {
       const target = state.participants.find(x=>x.number===p.number);
       if (target) target.name = e.target.value;
     };
     input.onblur = () => persist();
+    const nickInput = document.createElement("input");
+    nickInput.type = "text";
+    nickInput.placeholder = "ニックネーム（任意）";
+    nickInput.style.fontSize = "12px";
+    nickInput.value = p.nickname || "";
+    nickInput.oninput = (e) => {
+      const target = state.participants.find(x=>x.number===p.number);
+      if (target) target.nickname = e.target.value;
+    };
+    nickInput.onblur = () => persist();
     inputWrap.appendChild(input);
+    inputWrap.appendChild(nickInput);
     top.appendChild(num);
     top.appendChild(inputWrap);
     row.appendChild(top);
@@ -1671,7 +1697,15 @@ function openRankingModal(match){
     }
     remaining.forEach(n => {
       const div = el(`<div class="rank-choice"><span>No.${n} ${pname(n)}</span></div>`);
-      div.onclick = () => { rankings = [...rankings, n]; draw(); };
+      div.onclick = () => {
+        rankings = [...rankings, n];
+        // 残り1名になったら、その人を自動的に最下位として確定する
+        const stillRemaining = match.participants.filter(x => !rankings.includes(x));
+        if (stillRemaining.length === 1) {
+          rankings = [...rankings, stillRemaining[0]];
+        }
+        draw();
+      };
       modal.appendChild(div);
     });
     if (rankings.length) {
