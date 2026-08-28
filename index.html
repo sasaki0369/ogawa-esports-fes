@@ -89,8 +89,6 @@
   .name-btn{padding:14px 8px;min-height:56px;flex-direction:column;gap:2px;}
   .name-btn-nick{font-size:17px;font-weight:700;line-height:1.2;}
   .name-btn-sub{font-size:11px;font-weight:400;opacity:.7;line-height:1.2;}
-  .grade-btn-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;}
-  .grade-btn{padding:20px 8px;font-size:16px;}
   .pill{display:inline-block;padding:3px 12px;border-radius:999px;font-family:var(--font-display);font-size:12px;font-weight:700;letter-spacing:.04em;white-space:nowrap;border:1.5px solid currentColor;}
   .pill-active{background:var(--burgundy);color:#fff;border-color:var(--burgundy);}
   .pill-done{background:#EAF1EA;color:var(--forest);}
@@ -171,35 +169,14 @@
   a.linklike{color:var(--steel);text-decoration:underline;font-size:12px;}
 
   /* ログインゲート */
-  .login-gate{position:fixed;inset:0;background:var(--paper);z-index:500;display:flex;align-items:center;justify-content:center;padding:24px;}
-  .login-gate.hide{display:none;}
-  .login-card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:40px 32px;max-width:360px;width:100%;text-align:center;box-shadow:0 4px 16px rgba(43,36,30,.1);}
-  .login-title{font-family:var(--font-display);font-size:24px;font-weight:700;color:var(--burgundy);}
-  .login-sub{font-family:var(--font-mono);font-size:12px;color:var(--sub);margin-top:4px;letter-spacing:.05em;}
-  .login-msg{margin-top:14px;font-size:13px;color:var(--sub);min-height:18px;}
-  .login-msg.error{color:var(--burgundy);font-weight:700;}
-  .logout-btn{background:rgba(0,0,0,.15);color:#F3E7CE;border:1px solid rgba(243,231,206,.35);border-radius:6px;padding:5px 10px;font-family:var(--font-mono);font-size:10px;width:auto;white-space:nowrap;}
-  #app{display:none;}
-  #app.show{display:flex;}
+
 </style>
 </head>
 <body>
-<div id="loginGate" class="login-gate">
-  <div class="login-card">
-    <div class="login-title">小川eスポーツフェス</div>
-    <div class="login-sub">運営アプリ (OeSF)</div>
-    <button id="loginBtn" class="btn btn-primary" style="margin-top:24px;">Googleでログイン</button>
-    <div id="loginMsg" class="login-msg"></div>
-  </div>
-</div>
-
 <div id="app">
   <header class="topbar">
     <h1>小川eスポーツフェス (OeSF)</h1>
-    <div class="row" style="gap:10px;">
-      <div class="save-indicator" id="saveIndicator"><span class="dot"></span><span id="saveText">未接続</span></div>
-      <button id="logoutBtn" class="logout-btn">ログアウト</button>
-    </div>
+    <div class="save-indicator" id="saveIndicator"><span class="dot"></span><span id="saveText">未接続</span></div>
   </header>
 
   <main id="main"></main>
@@ -237,8 +214,7 @@ import {
   collection, addDoc, getDocs, deleteDoc, query, orderBy, limit, serverTimestamp
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import {
-  getAuth, GoogleAuthProvider, signInWithRedirect, signInWithPopup, getRedirectResult,
-  onAuthStateChanged, signOut
+  getAuth, signInAnonymously, onAuthStateChanged
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 
 /* ============================================================
@@ -254,9 +230,6 @@ const firebaseConfig = {
   appId: "1:398891252796:web:e48ac4d7dcbf8152929739"
 };
 /* ============================================================ */
-
-// このアプリへのログインを許可するGoogleアカウント
-const ALLOWED_EMAIL = "sasaki0369@gmail.com";
 
 let db = null;
 let auth = null;
@@ -283,7 +256,7 @@ const defaultState = () => ({
   engineType: null, // "group" | "hybrid" | "bracket"
   smallFormat: "full", // "full"(全試合1対1) | "semiOnly"(準決勝以降のみ1対1)　※10人以下の場合に選択
   bracketPool: [], // bracket方式(1対1)で使う、この大会に参加する全員の番号リスト
-  participants: [], // {number, name, grade, checkedIn, checkedInAt}
+  participants: [], // {number, name, nickname, checkedIn, checkedInAt}
   matches: [], // {id, roundType, roundNumber, screenId, participants:[num], status, rankings:[num]}
   champion: null,
   updatedAtLocal: null
@@ -343,7 +316,7 @@ function initializeParticipants(){
   state.participants = Array.from({length:50}, (_,i)=>({number:i+1, name:""}));
 }
 function clearParticipantNames(){
-  state.participants = state.participants.map(p=>({...p, name:"", nickname:"", checkedIn:false, grade:null, checkedInAt:null}));
+  state.participants = state.participants.map(p=>({...p, name:"", nickname:"", checkedIn:false, checkedInAt:null}));
 }
 // CSV形式: 「番号,氏名」の2列、または「番号,ニックネーム,氏名」の3列に対応
 function loadParticipantsFromCsv(text){
@@ -371,8 +344,6 @@ function loadParticipantsFromCsv(text){
 /* ============================================================
    受付（チェックイン）
    ============================================================ */
-const GRADE_OPTIONS = ["小学1年","小学2年","小学3年","小学4年","小学5年","小学6年","中学生","高校生","大学生以上"];
-
 function registeredUncheckedParticipants(){
   return state.participants.filter(p => p.name && p.name.trim() !== "" && !p.checkedIn);
 }
@@ -380,17 +351,16 @@ function checkedInParticipants(){
   return state.participants.filter(p => p.checkedIn).sort((a,b)=>(b.checkedInAt||0)-(a.checkedInAt||0));
 }
 
-function checkInExistingParticipant(number, grade){
+function checkInExistingParticipant(number){
   const p = state.participants.find(x=>x.number===number);
   if (!p) return;
   p.checkedIn = true;
-  p.grade = grade;
   p.checkedInAt = Date.now();
   persist();
   toast(`No.${p.number} ${p.name} を受付しました`);
 }
 
-function checkInNewParticipant(name, grade){
+function checkInNewParticipant(name){
   const trimmed = (name||"").trim();
   if (!trimmed) { toast("名前を入力してください"); return; }
   const maxNumber = state.participants.reduce((m,p)=>Math.max(m,p.number), 0);
@@ -398,7 +368,6 @@ function checkInNewParticipant(name, grade){
   state.participants = [...state.participants, {
     number: nextNumber,
     name: trimmed,
-    grade,
     checkedIn: true,
     checkedInAt: Date.now()
   }];
@@ -414,14 +383,14 @@ function undoCheckIn(number){
 }
 
 function exportReceptionCsv(){
-  const rows = [["番号","ニックネーム","氏名","学年","受付状況","受付時刻"]];
+  const rows = [["番号","ニックネーム","氏名","受付状況","受付時刻"]];
   const sorted = [...state.participants]
     .filter(p => p.name && p.name.trim() !== "")
     .sort((a,b)=>a.number-b.number);
   sorted.forEach(p=>{
     const time = p.checkedInAt ? new Date(p.checkedInAt) : null;
     const timeStr = time ? `${time.getFullYear()}/${String(time.getMonth()+1).padStart(2,'0')}/${String(time.getDate()).padStart(2,'0')} ${String(time.getHours()).padStart(2,'0')}:${String(time.getMinutes()).padStart(2,'0')}` : "";
-    rows.push([p.number, p.nickname||"", p.name, p.grade||"", p.checkedIn?"受付済み":"未受付", timeStr]);
+    rows.push([p.number, p.nickname||"", p.name, p.checkedIn?"受付済み":"未受付", timeStr]);
   });
   const csv = rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(",")).join("\r\n");
   const blob = new Blob(["\uFEFF"+csv], {type:"text/csv"});
@@ -1356,10 +1325,10 @@ function renderPodiumSummaryCard(){
   return `<div class="card"><h2>表彰結果</h2>${rows}</div>`;
 }
 
-let receptionFlow = { step: "select", isNew: false, number: null, name: "", grade: null };
+let receptionFlow = { step: "select", isNew: false, number: null, name: "", nickname: "" };
 
 function resetReceptionFlow(){
-  receptionFlow = { step: "select", isNew: false, number: null, name: "", grade: null };
+  receptionFlow = { step: "select", isNew: false, number: null, name: "", nickname: "" };
 }
 
 function renderReception(){
@@ -1392,7 +1361,7 @@ function renderReception(){
     checkedList.forEach(p=>{
       const displayName = p.nickname ? `${p.nickname}（${p.name}）` : p.name;
       const row = el(`<div class="row" style="padding:8px 0;border-bottom:1px dotted var(--line);"></div>`);
-      const info = el(`<div><span style="font-weight:700;">No.${p.number} ${displayName}</span><span class="muted" style="margin-left:8px;">${p.grade||''}</span></div>`);
+      const info = el(`<div><span style="font-weight:700;">No.${p.number} ${displayName}</span></div>`);
       const undoBtn = el(`<button class="btn btn-ghost" style="width:auto;padding:6px 10px;font-size:11px;">取消</button>`);
       undoBtn.onclick = () => { if(confirm(`No.${p.number} ${displayName}の受付を取り消しますか？`)){ undoCheckIn(p.number); render(); } };
       row.appendChild(info);
@@ -1425,7 +1394,7 @@ function renderReceptionFlow(){
         const sub = p.nickname ? p.name : "";
         const btn = el(`<button class="btn btn-ghost name-btn"><span class="name-btn-nick">${nick}</span>${sub?`<span class="name-btn-sub">${sub}</span>`:''}</button>`);
         btn.onclick = () => {
-          receptionFlow = { step:"grade", isNew:false, number:p.number, name:p.name, nickname:p.nickname||"", grade:null };
+          receptionFlow = { step:"confirm", isNew:false, number:p.number, name:p.name, nickname:p.nickname||"" };
           renderReceptionFlow();
         };
         grid.appendChild(btn);
@@ -1434,28 +1403,9 @@ function renderReceptionFlow(){
     document.getElementById("newNameNextBtn").onclick = () => {
       const name = document.getElementById("newNameInput").value.trim();
       if (!name) { toast("名前を入力してください"); return; }
-      receptionFlow = { step:"grade", isNew:true, number:null, name, nickname:"", grade:null };
+      receptionFlow = { step:"confirm", isNew:true, number:null, name, nickname:"" };
       renderReceptionFlow();
     };
-
-  } else if (receptionFlow.step === "grade") {
-    card.innerHTML = `
-      <div class="phase-title" style="margin-bottom:2px;">${receptionFlow.nickname || receptionFlow.name} さんの学年を選択</div>
-      <div class="muted" style="margin-bottom:14px;">${receptionFlow.isNew ? '新規登録' : ''}</div>
-      <div class="grade-btn-grid" id="gradeBtnGrid"></div>
-      <button class="btn btn-ghost" id="backToSelectBtn" style="margin-top:16px;">戻る</button>
-    `;
-    const grid = document.getElementById("gradeBtnGrid");
-    GRADE_OPTIONS.forEach(g=>{
-      const btn = el(`<button class="btn btn-ghost grade-btn">${g}</button>`);
-      btn.onclick = () => {
-        receptionFlow.grade = g;
-        receptionFlow.step = "confirm";
-        renderReceptionFlow();
-      };
-      grid.appendChild(btn);
-    });
-    document.getElementById("backToSelectBtn").onclick = () => { resetReceptionFlow(); renderReceptionFlow(); };
 
   } else if (receptionFlow.step === "confirm") {
     const displayName = receptionFlow.nickname
@@ -1464,20 +1414,16 @@ function renderReceptionFlow(){
     card.innerHTML = `
       <div class="phase-title" style="margin-bottom:16px;">受付内容の確認</div>
       <div class="row"><span class="muted">名前</span><span style="font-weight:700;font-size:19px;">${displayName}${receptionFlow.isNew?'（新規登録）':''}</span></div>
-      <div class="row" style="margin-top:12px;"><span class="muted">学年</span><span style="font-weight:700;font-size:19px;">${receptionFlow.grade}</span></div>
       <button class="btn btn-primary" id="confirmCheckInBtn" style="margin-top:22px;">受付登録する</button>
-      <button class="btn btn-ghost" id="backToGradeBtn" style="margin-top:8px;">学年を選び直す</button>
+      <button class="btn btn-ghost" id="backToSelectBtn" style="margin-top:8px;">戻る</button>
     `;
     document.getElementById("confirmCheckInBtn").onclick = () => {
-      if (receptionFlow.isNew) checkInNewParticipant(receptionFlow.name, receptionFlow.grade);
-      else checkInExistingParticipant(receptionFlow.number, receptionFlow.grade);
+      if (receptionFlow.isNew) checkInNewParticipant(receptionFlow.name);
+      else checkInExistingParticipant(receptionFlow.number);
       resetReceptionFlow();
       render();
     };
-    document.getElementById("backToGradeBtn").onclick = () => {
-      receptionFlow.step = "grade";
-      renderReceptionFlow();
-    };
+    document.getElementById("backToSelectBtn").onclick = () => { resetReceptionFlow(); renderReceptionFlow(); };
   }
 }
 
@@ -1928,86 +1874,22 @@ document.querySelectorAll("nav.tabbar button").forEach(btn => {
 });
 
 /* ============================================================
-   認証（Googleログイン・許可アカウント限定）
+   認証（匿名認証・バックグラウンドで自動サインイン）
    ============================================================ */
-const loginGateEl = document.getElementById("loginGate");
-const appEl = document.getElementById("app");
-const loginBtn = document.getElementById("loginBtn");
-const loginMsgEl = document.getElementById("loginMsg");
-const logoutBtn = document.getElementById("logoutBtn");
-let lastAuthError = "";
-
-function showLoginGate(message, isError){
-  appEl.classList.remove("show");
-  loginGateEl.classList.remove("hide");
-  loginMsgEl.textContent = message || "";
-  loginMsgEl.classList.toggle("error", !!isError);
-}
-function showApp(){
-  loginGateEl.classList.add("hide");
-  appEl.classList.add("show");
-}
-
-loginBtn.onclick = async () => {
-  if (!auth) { toast("Firebase未設定です"); return; }
-  loginMsgEl.textContent = "ログイン中...";
-  loginMsgEl.classList.remove("error");
-  const provider = new GoogleAuthProvider();
-  try {
-    await signInWithPopup(auth, provider);
-    // 成功時はonAuthStateChangedが検知して画面を切り替える
-  } catch (err) {
-    console.error("popup sign-in failed", err);
-    if (err.code === "auth/popup-closed-by-user" || err.code === "auth/cancelled-popup-request") {
-      loginMsgEl.textContent = "";
-      return;
-    }
-    if (err.code === "auth/popup-blocked" || err.code === "auth/operation-not-supported-in-this-environment") {
-      // ポップアップが使えない環境ではリダイレクト方式にフォールバック
-      loginMsgEl.textContent = "ログイン中...（別ウィンドウ方式に切り替えています）";
-      try {
-        await signInWithRedirect(auth, provider);
-      } catch (err2) {
-        showLoginGate(`ログインに失敗しました（${err2.code || err2.message}）`, true);
-      }
-      return;
-    }
-    showLoginGate(`ログインに失敗しました（${err.code || err.message}）`, true);
-  }
-};
-logoutBtn.onclick = () => { if (auth) signOut(auth).catch(()=>{}); };
-
 if (auth && firebaseReady) {
-  getRedirectResult(auth).then(result => {
-    if (result && result.user) {
-      console.log("redirect sign-in success:", result.user.email);
-    } else {
-      console.log("redirect result: no pending credential (通常のページ読み込み、またはブラウザがリダイレクト情報を引き継げなかった可能性)");
-    }
-  }).catch(err => {
-    console.error("redirect result error", err);
-    lastAuthError = `ログインに失敗しました（${err.code || err.message}）`;
-  });
   onAuthStateChanged(auth, (user) => {
-    if (!user) {
-      if (unsubscribeCurrent) { unsubscribeCurrent(); unsubscribeCurrent = null; }
-      showLoginGate(lastAuthError);
-      lastAuthError = "";
-      return;
+    if (user) {
+      subscribeRealtime();
+      render();
+    } else {
+      signInAnonymously(auth).catch(err => {
+        console.error("anonymous sign-in failed", err);
+        toast("Firebaseへの接続に失敗しました");
+      });
     }
-    if (user.email !== ALLOWED_EMAIL) {
-      if (unsubscribeCurrent) { unsubscribeCurrent(); unsubscribeCurrent = null; }
-      lastAuthError = `このアカウント(${user.email})は利用できません`;
-      signOut(auth).catch(()=>{});
-      return;
-    }
-    showApp();
-    subscribeRealtime();
-    render();
   });
 } else {
-  // Firebase未設定時はログイン機能なしでそのまま利用可能にする
-  showApp();
+  // Firebase未設定時はそのままローカルで利用可能にする
   render();
 }
 </script>
