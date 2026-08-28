@@ -1156,6 +1156,11 @@ async function clearAllData(){
    画面描画
    ============================================================ */
 function switchTab(tab){
+  if (tab === "display") {
+    // currentTabは変更しない → 大型画面を閉じると元の画面がそのまま見える
+    openDisplay();
+    return;
+  }
   currentTab = tab;
   document.querySelectorAll("nav.tabbar button").forEach(b=>{
     b.classList.toggle("active", b.dataset.tab === tab);
@@ -1170,7 +1175,6 @@ function render(){
   else if (currentTab === "tournament") renderTournament();
   else if (currentTab === "history") renderHistory();
   else if (currentTab === "data") renderData();
-  else if (currentTab === "display") { switchTab("home"); openDisplay(); }
   updateSaveIndicator(!!lastSavedAt);
 }
 
@@ -1848,13 +1852,13 @@ function renderDisplay(){
     const inProgress = state.matches.filter(m=>m.status==="IN_PROGRESS").length;
     const pending = state.matches.filter(m=>m.status==="PENDING").slice(0,8);
     body.innerHTML = `
-      <div style="font-size:24px;font-weight:800;color:var(--blue);margin-bottom:12px;">大会進行状況</div>
+      <div style="font-size:clamp(20px,3vw,32px);font-weight:800;color:var(--blue);margin-bottom:14px;">大会進行状況</div>
       <div class="card">
-        <div class="row"><span class="muted">現在のフェーズ</span><span style="font-weight:800;color:var(--red);">${PHASE_LABEL[state.phase]}</span></div>
-        <div class="row"><span class="muted">試合進捗</span><span style="font-weight:800;">${completed} / ${total} 完了</span></div>
-        ${inProgress>0?`<div class="row"><span class="muted">進行中</span><span style="font-weight:800;color:var(--blue);">${inProgress}試合</span></div>`:''}
+        <div class="row"><span class="muted" style="font-size:clamp(14px,1.8vw,20px);">現在のフェーズ</span><span style="font-weight:800;color:var(--red);font-size:clamp(16px,2.2vw,24px);">${PHASE_LABEL[state.phase]}</span></div>
+        <div class="row"><span class="muted" style="font-size:clamp(14px,1.8vw,20px);">試合進捗</span><span style="font-weight:800;font-size:clamp(16px,2.2vw,24px);">${completed} / ${total} 完了</span></div>
+        ${inProgress>0?`<div class="row"><span class="muted" style="font-size:clamp(14px,1.8vw,20px);">進行中</span><span style="font-weight:800;color:var(--blue);font-size:clamp(16px,2.2vw,24px);">${inProgress}試合</span></div>`:''}
       </div>
-      <div style="font-size:20px;font-weight:800;color:var(--cyan);margin:16px 0 8px;">次の対戦予定</div>
+      <div style="font-size:clamp(18px,2.6vw,28px);font-weight:800;color:var(--cyan);margin:18px 0 10px;">次の対戦予定</div>
       <div class="grid-match two"></div>
     `;
     const grid = body.querySelector(".grid-match");
@@ -1863,7 +1867,7 @@ function renderDisplay(){
     } else {
       pending.forEach(m=>{
         const c = el(`<div class="next-card"></div>`);
-        c.innerHTML = `<div style="font-weight:700;color:var(--cyan);">${m.id}</div>${participantGridHtml(m.participants)}`;
+        c.innerHTML = `<div style="font-weight:700;color:var(--cyan);font-size:clamp(16px,2.2vw,24px);">${m.id}</div>${participantGridHtml(m.participants, {big:true})}`;
         grid.appendChild(c);
       });
     }
