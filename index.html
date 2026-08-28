@@ -308,6 +308,11 @@ function pnickname(n){
   const p = participantByNumber(n);
   return (p && p.nickname) ? p.nickname : "";
 }
+// 表示用の名前（ニックネームがあればニックネーム、なければ氏名）。受付のボタン以外はすべてこちらを使う
+function displayName(n){
+  const nick = pnickname(n);
+  return nick || pname(n);
+}
 
 /* ============================================================
    大会進行ロジック（元Androidアプリのエンジンを移植）
@@ -357,7 +362,7 @@ function checkInExistingParticipant(number){
   p.checkedIn = true;
   p.checkedInAt = Date.now();
   persist();
-  toast(`No.${p.number} ${p.name} を受付しました`);
+  toast(`No.${p.number} ${p.nickname || p.name} を受付しました`);
 }
 
 function checkInNewParticipant(name){
@@ -1319,7 +1324,7 @@ function renderPodiumSummaryCard(){
   const rows = ranks.slice(0,3).map((num,i)=>`
     <div class="row" ${i>0?'style="margin-top:8px;"':''}>
       <span style="font-family:var(--font-display);font-weight:700;color:${colors[i]};">${labels[i]}</span>
-      <span style="font-weight:700;">No.${num} ${pname(num)}</span>
+      <span style="font-weight:700;">No.${num} ${displayName(num)}</span>
     </div>
   `).join("");
   return `<div class="card"><h2>表彰結果</h2>${rows}</div>`;
@@ -1359,11 +1364,11 @@ function renderReception(){
     listEl.innerHTML = `<div class="muted">まだ受付はありません。</div>`;
   } else {
     checkedList.forEach(p=>{
-      const displayName = p.nickname ? `${p.nickname}（${p.name}）` : p.name;
+      const label = p.nickname || p.name;
       const row = el(`<div class="row" style="padding:8px 0;border-bottom:1px dotted var(--line);"></div>`);
-      const info = el(`<div><span style="font-weight:700;">No.${p.number} ${displayName}</span></div>`);
+      const info = el(`<div><span style="font-weight:700;">No.${p.number} ${label}</span></div>`);
       const undoBtn = el(`<button class="btn btn-ghost" style="width:auto;padding:6px 10px;font-size:11px;">取消</button>`);
-      undoBtn.onclick = () => { if(confirm(`No.${p.number} ${displayName}の受付を取り消しますか？`)){ undoCheckIn(p.number); render(); } };
+      undoBtn.onclick = () => { if(confirm(`No.${p.number} ${label}の受付を取り消しますか？`)){ undoCheckIn(p.number); render(); } };
       row.appendChild(info);
       row.appendChild(undoBtn);
       listEl.appendChild(row);
@@ -1408,12 +1413,12 @@ function renderReceptionFlow(){
     };
 
   } else if (receptionFlow.step === "confirm") {
-    const displayName = receptionFlow.nickname
+    const confirmLabel = receptionFlow.nickname
       ? `${receptionFlow.nickname}<span style="font-size:13px;color:var(--sub);margin-left:8px;">${receptionFlow.name}</span>`
       : receptionFlow.name;
     card.innerHTML = `
       <div class="phase-title" style="margin-bottom:16px;">受付内容の確認</div>
-      <div class="row"><span class="muted">名前</span><span style="font-weight:700;font-size:19px;">${displayName}${receptionFlow.isNew?'（新規登録）':''}</span></div>
+      <div class="row"><span class="muted">名前</span><span style="font-weight:700;font-size:19px;">${confirmLabel}${receptionFlow.isNew?'（新規登録）':''}</span></div>
       <button class="btn btn-primary" id="confirmCheckInBtn" style="margin-top:22px;">受付登録する</button>
       <button class="btn btn-ghost" id="backToSelectBtn" style="margin-top:8px;">戻る</button>
     `;
@@ -1603,7 +1608,7 @@ function participantGridHtml(numbers, opts={}){
   const cols = opts.columns || numbers.length;
   const cellClass = opts.big ? "ptag ptag-big" : "ptag";
   const cells = numbers.map(n=>{
-    const nm = pname(n);
+    const nm = displayName(n);
     return `<div class="${cellClass}"><div class="ptag-num">${n}</div><div class="ptag-name">${nm||''}</div></div>`;
   }).join("");
   return `<div class="plist" style="grid-template-columns:repeat(${cols},1fr);">${cells}</div>`;
@@ -1627,7 +1632,7 @@ function renderMatchCard(match){
     btn.onclick = () => openRankingModal(match);
     card.appendChild(btn);
   } else if (match.status === "COMPLETED") {
-    const resultHtml = match.rankings.map((n,i)=>`${i+1}位: No.${n} ${pname(n)}`).join("<br>");
+    const resultHtml = match.rankings.map((n,i)=>`${i+1}位: No.${n} ${displayName(n)}`).join("<br>");
     card.appendChild(el(`<div class="ranking-result">${resultHtml}</div>`));
   }
   return card;
@@ -1645,7 +1650,7 @@ function openRankingModal(match){
   function draw(){
     modal.innerHTML = `<h3>${match.id} - 順位を入力</h3><div class="muted">上位から順にタップしてください</div>`;
     rankings.forEach((n, idx) => {
-      const div = el(`<div class="rank-choice picked"><span>No.${n} ${pname(n)}</span><span class="rank-num">${idx+1}位</span></div>`);
+      const div = el(`<div class="rank-choice picked"><span>No.${n} ${displayName(n)}</span><span class="rank-num">${idx+1}位</span></div>`);
       modal.appendChild(div);
     });
     const remaining = match.participants.filter(n => !rankings.includes(n));
@@ -1654,7 +1659,7 @@ function openRankingModal(match){
       modal.appendChild(divider);
     }
     remaining.forEach(n => {
-      const div = el(`<div class="rank-choice"><span>No.${n} ${pname(n)}</span></div>`);
+      const div = el(`<div class="rank-choice"><span>No.${n} ${displayName(n)}</span></div>`);
       div.onclick = () => {
         rankings = [...rankings, n];
         // 残り1名になったら、その人を自動的に最下位として確定する
@@ -1703,7 +1708,7 @@ async function renderHistory(){
     card.innerHTML = `
       <div class="row"><span class="muted">📅 ${dateStr}</span><span class="pill ${item.phase==='CEREMONY'||item.phase==='COMPLETED'?'pill-done':'pill-active'}">${PHASE_LABEL[item.phase]||''}</span></div>
       <div style="margin-top:6px;font-weight:700;">${actualCount}人トーナメント${item.engineType==='bracket'?'（1対1方式）':''}</div>
-      ${item.champion!=null ? `<div style="margin-top:4px;color:var(--red);">🏆 優勝: No.${item.champion} ${(item.participants||[]).find(p=>p.number===item.champion)?.name||''}</div>` : ''}
+      ${item.champion!=null ? `<div style="margin-top:4px;color:var(--red);">🏆 優勝: No.${item.champion} ${(()=>{const cp=(item.participants||[]).find(p=>p.number===item.champion); return cp ? (cp.nickname||cp.name||'') : '';})()}</div>` : ''}
     `;
     const btnRow = el(`<div class="btn-row" style="margin-top:10px;"></div>`);
     const loadBtn = el(`<button class="btn btn-primary">この大会を読込</button>`);
@@ -1787,8 +1792,10 @@ function renderDisplay(){
   dots.forEach((d,i)=>d.classList.toggle("on", i===dispPage));
 
   if (dispPage === 0) {
+    const singleLane = state.engineType === "hybrid"; // 10人以下かつ準決勝以降1対1は常に1レーン運用
+    const displayLimit = singleLane ? 1 : 2;
     const current = state.matches.filter(m=>m.status==="IN_PROGRESS");
-    const next = state.matches.filter(m=>m.status==="PENDING").slice(0,2);
+    const next = state.matches.filter(m=>m.status==="PENDING").slice(0,displayLimit);
     const topThree = computeTopThree();
 
     if (state.champion !== null && topThree.length >= 1) {
@@ -1800,7 +1807,7 @@ function renderDisplay(){
       const order = [1,0,2].filter(i => topThree[i] !== undefined); // 2位,1位,3位の順で表示(存在するものだけ)
       order.forEach(i => {
         const num = topThree[i];
-        const div = el(`<div class="podium-card p${i+1}"><div class="medal">${medals[i]}</div><div class="podium-name">${pname(num)||('No.'+num)}</div><div class="podium-sub">No.${num}</div></div>`);
+        const div = el(`<div class="podium-card p${i+1}"><div class="medal">${medals[i]}</div><div class="podium-name">${displayName(num)||('No.'+num)}</div><div class="podium-sub">No.${num}</div></div>`);
         row.appendChild(div);
       });
       wrap.appendChild(row);
@@ -1810,9 +1817,10 @@ function renderDisplay(){
     } else {
       body.innerHTML = "";
       if (current.length > 0) {
-        body.appendChild(el(`<div style="font-size:clamp(18px,2.6vw,28px);font-weight:800;color:var(--burgundy);margin-bottom:14px;">現在の試合（${current.length}試合）</div>`));
-        const gridCur = el(`<div class="grid-match ${current.length>1?'two':''}" style="margin-bottom:${next.length?'32px':'0'};"></div>`);
-        current.slice(0,2).forEach(m => {
+        const shownCurrent = current.slice(0, displayLimit);
+        body.appendChild(el(`<div style="font-size:clamp(18px,2.6vw,28px);font-weight:800;color:var(--burgundy);margin-bottom:14px;">現在の試合${singleLane?'':`（${current.length}試合）`}</div>`));
+        const gridCur = el(`<div class="grid-match ${(!singleLane && shownCurrent.length>1)?'two':''}" style="margin-bottom:${next.length?'32px':'0'};"></div>`);
+        shownCurrent.forEach(m => {
           const c = el(`<div class="match-card"></div>`);
           c.innerHTML = `<div class="mid" style="font-size:clamp(18px,2.4vw,26px);">${m.id}</div>${participantGridHtml(m.participants, {columns:2, big:true})}`;
           gridCur.appendChild(c);
@@ -1823,7 +1831,7 @@ function renderDisplay(){
         const nextIsPrimary = current.length === 0;
         const headSize = nextIsPrimary ? "clamp(18px,2.6vw,28px)" : "clamp(14px,1.8vw,20px)";
         body.appendChild(el(`<div style="font-size:${headSize};font-weight:800;color:var(--steel);margin-bottom:${nextIsPrimary?'14px':'10px'};">次の対戦</div>`));
-        const gridNext = el(`<div class="grid-match ${next.length>1?'two':''}"></div>`);
+        const gridNext = el(`<div class="grid-match ${(!singleLane && next.length>1)?'two':''}"></div>`);
         next.forEach(m => {
           const c = el(`<div class="${nextIsPrimary?'match-card':'next-card'}"></div>`);
           const midHtml = nextIsPrimary ? `<div class="mid" style="font-size:clamp(18px,2.4vw,26px);">${m.id}</div>` : `<div style="font-weight:700;">${m.id}</div>`;
