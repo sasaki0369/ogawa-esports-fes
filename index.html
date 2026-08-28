@@ -1850,7 +1850,9 @@ function renderDisplay(){
     const total = state.matches.length;
     const completed = state.matches.filter(m=>m.status==="COMPLETED").length;
     const inProgress = state.matches.filter(m=>m.status==="IN_PROGRESS").length;
-    const pending = state.matches.filter(m=>m.status==="PENDING").slice(0,8);
+    // ページ1(現在の試合)で既に「次の対戦」として表示済みの試合は、ここでは重複して出さない
+    const displayLimit = state.engineType === "hybrid" ? 1 : 2;
+    const pending = state.matches.filter(m=>m.status==="PENDING").slice(displayLimit, displayLimit+8);
     body.innerHTML = `
       <div style="font-size:clamp(20px,3vw,32px);font-weight:800;color:var(--blue);margin-bottom:14px;">大会進行状況</div>
       <div class="card">
