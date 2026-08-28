@@ -343,7 +343,8 @@ function loadParticipantsFromCsv(text){
     if (idx >= 0) existing[idx] = { ...existing[idx], ...p }; else existing.push(p);
   }
   existing.sort((a,b)=>a.number-b.number);
-  state.participants = existing;
+  // CSV読み込み時は受付状態を全員分クリアする
+  state.participants = existing.map(p => ({ ...p, checkedIn: false, checkedInAt: null }));
 }
 
 /* ============================================================
@@ -1449,7 +1450,7 @@ function renderParticipants(){
         <button class="btn btn-ghost" id="clearNamesBtn">名前をクリア</button>
       </div>
       <div class="field-group" style="margin-top:12px;">
-        <label class="field">CSV読込（「番号,氏名」または「番号,ニックネーム,氏名」）</label>
+        <label class="field">CSV読込（「番号,氏名」または「番号,ニックネーム,氏名」）※読み込むと受付状態は全員クリアされます</label>
         <input type="file" id="csvInput" accept=".csv,text/csv">
       </div>
     </div>
@@ -1516,8 +1517,13 @@ function renderParticipants(){
   document.getElementById("csvInput").onchange = (e) => {
     const f = e.target.files[0];
     if (!f) return;
+    const hasCheckedIn = state.participants.some(p => p.checkedIn);
+    if (hasCheckedIn && !confirm("CSVを読み込むと、現在の受付状態はすべてクリアされます。よろしいですか？")) {
+      e.target.value = "";
+      return;
+    }
     const reader = new FileReader();
-    reader.onload = (ev) => { loadParticipantsFromCsv(ev.target.result); persist(); render(); toast("CSVを読み込みました"); };
+    reader.onload = (ev) => { loadParticipantsFromCsv(ev.target.result); persist(); render(); toast("CSVを読み込みました（受付状態はクリアされました）"); };
     reader.readAsText(f, "utf-8");
   };
 }
