@@ -85,6 +85,10 @@
   select{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:6px;font-size:14px;background:#FFFDF9;font-family:var(--font-body);}
   label.field{display:block;font-size:11px;color:var(--sub);margin-bottom:4px;letter-spacing:.04em;font-family:var(--font-mono);}
   .field-group{margin-bottom:12px;}
+  .name-btn-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;}
+  .name-btn{padding:18px 8px;font-size:15px;min-height:56px;}
+  .grade-btn-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;}
+  .grade-btn{padding:20px 8px;font-size:16px;}
   .pill{display:inline-block;padding:3px 12px;border-radius:999px;font-family:var(--font-display);font-size:12px;font-weight:700;letter-spacing:.04em;white-space:nowrap;border:1.5px solid currentColor;}
   .pill-active{background:var(--burgundy);color:#fff;border-color:var(--burgundy);}
   .pill-done{background:#EAF1EA;color:var(--forest);}
@@ -1020,13 +1024,15 @@ function renderPodiumSummaryCard(){
   return `<div class="card"><h2>表彰結果</h2>${rows}</div>`;
 }
 
-let receptionMode = "existing"; // "existing" | "new"
+let receptionFlow = { step: "select", isNew: false, number: null, name: "", grade: null };
+
+function resetReceptionFlow(){
+  receptionFlow = { step: "select", isNew: false, number: null, name: "", grade: null };
+}
 
 function renderReception(){
   const main = document.getElementById("main");
-  const uncheckedList = registeredUncheckedParticipants();
   const checkedList = checkedInParticipants();
-  const gradeOptionsHtml = GRADE_OPTIONS.map(g=>`<option value="${g}">${g}</option>`).join("");
 
   main.innerHTML = `
     <div class="card">
@@ -1034,12 +1040,8 @@ function renderReception(){
         <h2 style="margin:0;">受付</h2>
         <span class="pill pill-active">受付済み ${checkedList.length}名</span>
       </div>
-      <div class="btn-row" style="margin-top:12px;">
-        <button class="btn ${receptionMode==='existing'?'btn-primary':'btn-ghost'}" id="modeExistingBtn">登録済み参加者</button>
-        <button class="btn ${receptionMode==='new'?'btn-primary':'btn-ghost'}" id="modeNewBtn">新規参加者</button>
-      </div>
     </div>
-    <div class="card" id="receptionForm"></div>
+    <div class="card" id="receptionFlowCard"></div>
     <div class="card">
       <div class="row">
         <h2 style="margin:0;">受付済み一覧</h2>
@@ -1048,55 +1050,8 @@ function renderReception(){
       <div id="checkedInList" style="margin-top:10px;"></div>
     </div>
   `;
-
-  const formCard = document.getElementById("receptionForm");
-  if (receptionMode === "existing") {
-    if (uncheckedList.length === 0) {
-      formCard.innerHTML = `<div class="muted">未受付の登録済み参加者はいません。</div>`;
-    } else {
-      formCard.innerHTML = `
-        <div class="field-group">
-          <label class="field">参加者を選択</label>
-          <select id="existingSelect">
-            ${uncheckedList.map(p=>`<option value="${p.number}">No.${p.number} ${p.name}</option>`).join("")}
-          </select>
-        </div>
-        <div class="field-group">
-          <label class="field">学年</label>
-          <select id="existingGrade">${gradeOptionsHtml}</select>
-        </div>
-        <button class="btn btn-primary" id="existingCheckInBtn">受付する</button>
-      `;
-      document.getElementById("existingCheckInBtn").onclick = () => {
-        const number = parseInt(document.getElementById("existingSelect").value, 10);
-        const grade = document.getElementById("existingGrade").value;
-        checkInExistingParticipant(number, grade);
-        render();
-      };
-    }
-  } else {
-    formCard.innerHTML = `
-      <div class="field-group">
-        <label class="field">名前</label>
-        <input type="text" id="newName" placeholder="名前を入力">
-      </div>
-      <div class="field-group">
-        <label class="field">学年</label>
-        <select id="newGrade">${gradeOptionsHtml}</select>
-      </div>
-      <button class="btn btn-primary" id="newCheckInBtn">受付する</button>
-    `;
-    document.getElementById("newCheckInBtn").onclick = () => {
-      const name = document.getElementById("newName").value;
-      const grade = document.getElementById("newGrade").value;
-      checkInNewParticipant(name, grade);
-      render();
-    };
-  }
-
-  document.getElementById("modeExistingBtn").onclick = () => { receptionMode = "existing"; render(); };
-  document.getElementById("modeNewBtn").onclick = () => { receptionMode = "new"; render(); };
   document.getElementById("exportCsvBtn").onclick = exportReceptionCsv;
+  renderReceptionFlow();
 
   const listEl = document.getElementById("checkedInList");
   if (checkedList.length === 0) {
@@ -1111,6 +1066,80 @@ function renderReception(){
       row.appendChild(undoBtn);
       listEl.appendChild(row);
     });
+  }
+}
+
+function renderReceptionFlow(){
+  const card = document.getElementById("receptionFlowCard");
+
+  if (receptionFlow.step === "select") {
+    const uncheckedList = registeredUncheckedParticipants();
+    card.innerHTML = `
+      <div class="phase-title" style="margin-bottom:12px;">参加者を選択</div>
+      <div class="name-btn-grid" id="nameBtnGrid"></div>
+      <div class="muted" style="margin:18px 0 8px;">登録されていない場合はこちら</div>
+      <div class="field-group">
+        <input type="text" id="newNameInput" placeholder="名前を入力">
+      </div>
+      <button class="btn btn-ghost" id="newNameNextBtn">この名前で進む</button>
+    `;
+    const grid = document.getElementById("nameBtnGrid");
+    if (uncheckedList.length === 0) {
+      grid.innerHTML = `<div class="muted">未受付の登録済み参加者はいません。</div>`;
+    } else {
+      uncheckedList.forEach(p=>{
+        const btn = el(`<button class="btn btn-ghost name-btn">${p.name}</button>`);
+        btn.onclick = () => {
+          receptionFlow = { step:"grade", isNew:false, number:p.number, name:p.name, grade:null };
+          renderReceptionFlow();
+        };
+        grid.appendChild(btn);
+      });
+    }
+    document.getElementById("newNameNextBtn").onclick = () => {
+      const name = document.getElementById("newNameInput").value.trim();
+      if (!name) { toast("名前を入力してください"); return; }
+      receptionFlow = { step:"grade", isNew:true, number:null, name, grade:null };
+      renderReceptionFlow();
+    };
+
+  } else if (receptionFlow.step === "grade") {
+    card.innerHTML = `
+      <div class="phase-title" style="margin-bottom:2px;">${receptionFlow.name} さんの学年を選択</div>
+      <div class="muted" style="margin-bottom:14px;">${receptionFlow.isNew ? '新規登録' : ''}</div>
+      <div class="grade-btn-grid" id="gradeBtnGrid"></div>
+      <button class="btn btn-ghost" id="backToSelectBtn" style="margin-top:16px;">戻る</button>
+    `;
+    const grid = document.getElementById("gradeBtnGrid");
+    GRADE_OPTIONS.forEach(g=>{
+      const btn = el(`<button class="btn btn-ghost grade-btn">${g}</button>`);
+      btn.onclick = () => {
+        receptionFlow.grade = g;
+        receptionFlow.step = "confirm";
+        renderReceptionFlow();
+      };
+      grid.appendChild(btn);
+    });
+    document.getElementById("backToSelectBtn").onclick = () => { resetReceptionFlow(); renderReceptionFlow(); };
+
+  } else if (receptionFlow.step === "confirm") {
+    card.innerHTML = `
+      <div class="phase-title" style="margin-bottom:16px;">受付内容の確認</div>
+      <div class="row"><span class="muted">名前</span><span style="font-weight:700;font-size:19px;">${receptionFlow.name}${receptionFlow.isNew?'（新規登録）':''}</span></div>
+      <div class="row" style="margin-top:12px;"><span class="muted">学年</span><span style="font-weight:700;font-size:19px;">${receptionFlow.grade}</span></div>
+      <button class="btn btn-primary" id="confirmCheckInBtn" style="margin-top:22px;">受付登録する</button>
+      <button class="btn btn-ghost" id="backToGradeBtn" style="margin-top:8px;">学年を選び直す</button>
+    `;
+    document.getElementById("confirmCheckInBtn").onclick = () => {
+      if (receptionFlow.isNew) checkInNewParticipant(receptionFlow.name, receptionFlow.grade);
+      else checkInExistingParticipant(receptionFlow.number, receptionFlow.grade);
+      resetReceptionFlow();
+      render();
+    };
+    document.getElementById("backToGradeBtn").onclick = () => {
+      receptionFlow.step = "grade";
+      renderReceptionFlow();
+    };
   }
 }
 
