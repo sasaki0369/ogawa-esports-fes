@@ -544,17 +544,30 @@ const NEXT_STAGE_LABEL = {
   FINAL: "結果を確定する"
 };
 
+// この大会の総参加人数（予選の参加者数の合計）。10人以下なら準決勝・決勝を1対1にする
+function tournamentParticipantCount(){
+  return state.matches.filter(m=>m.roundType==="PRELIMINARY").reduce((sum,m)=>sum+m.participants.length, 0);
+}
+function isSmallTournament(){
+  const n = tournamentParticipantCount();
+  return n > 0 && n <= 10;
+}
+
 // 直近のSEMI_FINAL/MAIN_ROUNDの勝者数を見て、ボタンの文言を決める
-// (人数によっては準決勝を複数回繰り返して4人まで絞り込むため)
+// (人数によっては準決勝を複数回繰り返して4人(または1対1なら2人)まで絞り込むため)
 function getNextStageLabel(){
+  const smallMode = isSmallTournament();
   if (state.phase === "MAIN_ROUND") {
     const main = state.matches.filter(m=>m.roundType==="MAIN_ROUND");
     const winners = main.flatMap(m=>m.rankings.slice(0,2));
-    return winners.length <= 4 ? "決勝ステージへ進む" : "準決勝ステージへ進む";
+    const threshold = smallMode ? 2 : 4;
+    return winners.length <= threshold ? "決勝ステージへ進む" : "準決勝ステージへ進む";
   }
   if (state.phase === "SEMI_FINAL") {
-    const winners = latestRoundMatches("SEMI_FINAL").flatMap(m=>m.rankings.slice(0,2));
-    return winners.length <= 4 ? "決勝ステージへ進む" : "準決勝を続ける（絞り込み）";
+    const perMatch = smallMode ? 1 : 2;
+    const winners = latestRoundMatches("SEMI_FINAL").flatMap(m=>m.rankings.slice(0,perMatch));
+    const threshold = smallMode ? 2 : 4;
+    return winners.length <= threshold ? "決勝ステージへ進む" : "準決勝を続ける（絞り込み）";
   }
   return NEXT_STAGE_LABEL[state.phase];
 }
@@ -576,7 +589,18 @@ function advanceToNextPhase(){
     proceedTowardFinal(winners);
   }
   else if (state.phase === "SEMI_FINAL") {
-    const winners = latestRoundMatches("SEMI_FINAL").flatMap(m=>m.rankings.slice(0,2));
+    const smallMode = isSmallTournament();
+    const latest = latestRoundMatches("SEMI_FINAL");
+    const perMatch = smallMode ? 1 : 2;
+    const winners = latest.flatMap(m=>m.rankings.slice(0,perMatch));
+    // 1対1方式で決勝に進む2名が確定した場合、直前の準決勝が2試合(1対1×2)なら敗者同士で3位決定戦を作る
+    if (smallMode && winners.length === 2) {
+      const realMatches = latest.filter(m=>m.participants.length===2);
+      if (realMatches.length === 2) {
+        const losers = realMatches.map(m=>m.rankings[1]);
+        generateThirdPlaceMatch(losers);
+      }
+    }
     proceedTowardFinal(winners);
   }
   else if (state.phase === "FINAL") completeTournament();
@@ -634,8 +658,75 @@ function splitForSemiReduction(n){
   return splitIntoGroupSizes(n);
 }
 
+// 総参加人数10人以下の場合、準決勝・決勝を1対1のトーナメント方式で組む
+function proceedTowardFinalSmallMode(pool){
+  if (pool.length <= 2) {
+    generateGrandFinal(pool);
+    return;
+  }
+  const historySet = buildPairHistorySet();
+  let bye = null;
+  let pairPool = shuffled(pool);
+  if (pairPool.length % 2 === 1) {
+    bye = pairPool.pop();
+  }
+  let bestPairs = null, bestScore = Infinity;
+  const attempts = pairPool.length <= 10 ? 300 : 100;
+  for (let a=0; a<attempts && bestScore>0; a++){
+    const arr = shuffled(pairPool);
+    const pairs = [];
+    for (let i=0;i<arr.length;i+=2) pairs.push([arr[i], arr[i+1]]);
+    const score = pairs.reduce((s,p)=> s + (historySet.has(pairKey(p[0],p[1])) ? 1 : 0), 0);
+    if (score < bestScore){ bestScore = score; bestPairs = pairs; }
+  }
+  const existingRoundNumbers = state.matches.filter(m=>m.roundType==="SEMI_FINAL").map(m=>m.roundNumber);
+  const roundNumber = existingRoundNumbers.length ? Math.max(...existingRoundNumbers) + 1 : 1;
+  const label = roundNumber === 1 ? "準決勝" : `準決勝(${roundNumber}回戦)`;
+  const newMatches = bestPairs.map((pair,i)=>({
+    id: `${label}R${i+1}`,
+    roundType: "SEMI_FINAL",
+    roundNumber,
+    screenId: `${label}-${letterFor(i)}`,
+    participants: pair,
+    status: "PENDING",
+    rankings: []
+  }));
+  if (bye !== null) {
+    // 対戦相手がいない場合は不戦勝として自動的に勝ち上がる
+    newMatches.push({
+      id: `${label}(不戦勝)`,
+      roundType: "SEMI_FINAL",
+      roundNumber,
+      screenId: `${label}-BYE`,
+      participants: [bye],
+      status: "COMPLETED",
+      rankings: [bye]
+    });
+  }
+  state.matches = [...state.matches, ...newMatches];
+  state.phase = "SEMI_FINAL";
+}
+
+function generateThirdPlaceMatch(losers){
+  if (losers.length !== 2) return;
+  state.matches = [...state.matches, {
+    id: "3位決定戦",
+    roundType: "THIRD_PLACE",
+    roundNumber: 1,
+    screenId: "3位決定戦",
+    participants: losers,
+    status: "PENDING",
+    rankings: []
+  }];
+}
+
 // 決勝が必ず4人になるよう、人数に応じて準決勝を挟むか・繰り返すかを決める
+// (総参加人数10人以下の場合は1対1方式にする)
 function proceedTowardFinal(pool){
+  if (isSmallTournament()) {
+    proceedTowardFinalSmallMode(pool);
+    return;
+  }
   if (pool.length <= 4) {
     generateGrandFinal(pool);
     return;
@@ -702,8 +793,11 @@ function computeParticipantRecord(number){
   const symbols = relevant.map(m=>{
     const rank = m.rankings.indexOf(number);
     if (m.roundType === "GRAND_FINAL") return rank === 0 ? "◎" : "×";
+    if (m.roundType === "THIRD_PLACE") return rank === 0 ? "○" : "×";
     if (m.roundType === "LOSERS_REVIVAL") return rank < 2 ? "△" : "×";
-    return rank < 2 ? "○" : "×";
+    // 1対1(2人)の試合は勝者のみ○、3〜4人の試合は上位2名が○
+    const advanceCount = m.participants.length <= 2 ? 1 : 2;
+    return rank < advanceCount ? "○" : "×";
   });
   let status;
   if (state.champion === number) {
@@ -711,7 +805,8 @@ function computeParticipantRecord(number){
   } else {
     const lastMatch = relevant[relevant.length - 1];
     const lastRank = lastMatch.rankings.indexOf(number);
-    const lastWon = lastMatch.roundType === "GRAND_FINAL" ? lastRank === 0 : lastRank < 2;
+    const lastAdvanceCount = lastMatch.participants.length <= 2 ? 1 : 2;
+    const lastWon = lastMatch.roundType === "GRAND_FINAL" ? lastRank === 0 : lastRank < lastAdvanceCount;
     if (!lastWon && lastMatch.roundType !== "PRELIMINARY") {
       status = "敗退";
     } else if (!lastWon && lastMatch.roundType === "PRELIMINARY") {
@@ -1010,9 +1105,19 @@ function phaseItemHtml(title, desc, roundType, winners){
   `;
 }
 
-function renderPodiumSummaryCard(){
+// 優勝/準優勝/3位を算出（3位決定戦がある場合はそちらを優先、なければ決勝の3位を使用）
+function computeTopThree(){
   const gf = state.matches.find(m=>m.roundType==="GRAND_FINAL"&&m.status==="COMPLETED");
-  const ranks = gf ? gf.rankings : [];
+  if (!gf) return [];
+  const thirdMatch = state.matches.find(m=>m.roundType==="THIRD_PLACE"&&m.status==="COMPLETED");
+  const ranks = [gf.rankings[0], gf.rankings[1]];
+  if (thirdMatch) ranks.push(thirdMatch.rankings[0]);
+  else if (gf.rankings.length >= 3) ranks.push(gf.rankings[2]);
+  return ranks.filter(n => n !== undefined);
+}
+
+function renderPodiumSummaryCard(){
+  const ranks = computeTopThree();
   const labels = ["🥇優勝","🥈準優勝","🥉3位"];
   const colors = ["var(--gold)","var(--sub)","#B0755A"];
   const rows = ranks.slice(0,3).map((num,i)=>`
@@ -1235,7 +1340,10 @@ function phaseCaption(){
       const roundNote = rounds > 1 ? `（絞り込み${rounds}回戦）` : "";
       return `${latest.length}試合${roundNote}｜上位2名が決勝進出`;
     }
-    case "FINAL": return `決勝戦`;
+    case "FINAL": {
+      const hasThird = state.matches.some(m=>m.roundType==="THIRD_PLACE");
+      return hasThird ? `決勝戦（3位決定戦あり）` : `決勝戦`;
+    }
     default: return "";
   }
 }
@@ -1264,11 +1372,13 @@ function renderTournament(){
   let currentMatches;
   if (roundType === "SEMI_FINAL") {
     currentMatches = latestRoundMatches("SEMI_FINAL");
+  } else if (roundType === "GRAND_FINAL") {
+    currentMatches = state.matches.filter(m=>m.roundType==="GRAND_FINAL"||m.roundType==="THIRD_PLACE");
   } else if (roundType) {
     currentMatches = state.matches.filter(m=>m.roundType===roundType);
   } else {
-    // 大会終了後(表彰式/完了)は決勝の結果を表示
-    currentMatches = state.matches.filter(m=>m.roundType==="GRAND_FINAL");
+    // 大会終了後(表彰式/完了)は決勝・3位決定戦の結果を表示
+    currentMatches = state.matches.filter(m=>m.roundType==="GRAND_FINAL"||m.roundType==="THIRD_PLACE");
   }
   if (currentMatches.length === 0) {
     list.innerHTML = `<div class="empty">表示する試合がありません</div>`;
@@ -1456,8 +1566,7 @@ function renderDisplay(){
   if (dispPage === 0) {
     const current = state.matches.filter(m=>m.status==="IN_PROGRESS");
     const next = state.matches.filter(m=>m.status==="PENDING").slice(0,2);
-    const gf = state.matches.find(m=>m.roundType==="GRAND_FINAL"&&m.status==="COMPLETED");
-    const topThree = gf ? gf.rankings.slice(0,3) : [];
+    const topThree = computeTopThree();
 
     if (state.champion !== null && topThree.length >= 1) {
       body.innerHTML = "";
