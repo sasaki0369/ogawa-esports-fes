@@ -1615,7 +1615,19 @@ function renderTournament(){
     <div id="matchList"></div>
   `;
   const advBtn = document.getElementById("advanceBtn");
-  if (advBtn) advBtn.onclick = () => { advanceToNextPhase(); render(); };
+  if (advBtn) {
+    advBtn.onclick = () => {
+      if (readyToFinish) {
+        if (confirm("表彰に移りますか？")) {
+          advanceToNextPhase();
+          openDisplay();
+        }
+      } else {
+        advanceToNextPhase();
+        render();
+      }
+    };
+  }
   const list = document.getElementById("matchList");
   if (state.matches.length === 0) {
     list.innerHTML = `<div class="empty">大会を開始すると試合が表示されます</div>`;
