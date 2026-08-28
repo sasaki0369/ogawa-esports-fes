@@ -332,7 +332,7 @@ function initializeParticipants(){
   state.participants = Array.from({length:50}, (_,i)=>({number:i+1, name:""}));
 }
 function clearParticipantNames(){
-  state.participants = state.participants.map(p=>({...p, name:""}));
+  state.participants = state.participants.map(p=>({...p, name:"", checkedIn:false, grade:null, checkedInAt:null}));
 }
 function loadParticipantsFromCsv(text){
   const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
@@ -805,16 +805,20 @@ function computeParticipantRecord(number){
   } else {
     const lastMatch = relevant[relevant.length - 1];
     const lastRank = lastMatch.rankings.indexOf(number);
-    const lastAdvanceCount = lastMatch.participants.length <= 2 ? 1 : 2;
-    const lastWon = lastMatch.roundType === "GRAND_FINAL" ? lastRank === 0 : lastRank < lastAdvanceCount;
-    if (!lastWon && lastMatch.roundType !== "PRELIMINARY") {
-      status = "敗退";
-    } else if (!lastWon && lastMatch.roundType === "PRELIMINARY") {
-      const revivalGenerated = state.matches.some(m=>m.roundType==="LOSERS_REVIVAL");
-      const inRevival = state.matches.some(m=>m.roundType==="LOSERS_REVIVAL" && m.participants.includes(number));
-      status = (revivalGenerated && !inRevival) ? "敗退" : "勝ち上がり中";
+    if (lastMatch.roundType === "THIRD_PLACE") {
+      status = lastRank === 0 ? "3位" : "敗退";
     } else {
-      status = "勝ち上がり中";
+      const lastAdvanceCount = lastMatch.participants.length <= 2 ? 1 : 2;
+      const lastWon = lastMatch.roundType === "GRAND_FINAL" ? lastRank === 0 : lastRank < lastAdvanceCount;
+      if (!lastWon && lastMatch.roundType !== "PRELIMINARY") {
+        status = "敗退";
+      } else if (!lastWon && lastMatch.roundType === "PRELIMINARY") {
+        const revivalGenerated = state.matches.some(m=>m.roundType==="LOSERS_REVIVAL");
+        const inRevival = state.matches.some(m=>m.roundType==="LOSERS_REVIVAL" && m.participants.includes(number));
+        status = (revivalGenerated && !inRevival) ? "敗退" : "勝ち上がり中";
+      } else {
+        status = "勝ち上がり中";
+      }
     }
   }
   return { symbols, status };
@@ -826,7 +830,7 @@ function computeStatusCounts(){
     const rec = computeParticipantRecord(p.number);
     if (!rec.status) return;
     if (rec.status === "勝ち上がり中" || rec.status === "優勝") winners++;
-    else if (rec.status === "敗退") losers++;
+    else if (rec.status === "敗退" || rec.status === "3位") losers++;
     if (rec.symbols.includes("△")) revived++;
   });
   const finalists = state.matches.filter(m=>m.roundType==="GRAND_FINAL").reduce((acc,m)=>acc+m.participants.length,0);
@@ -937,6 +941,7 @@ function updateSaveIndicator(ok, error){
 
 function subscribeRealtime(){
   if (!firebaseReady) { updateSaveIndicator(false); return; }
+  if (unsubscribeCurrent) { unsubscribeCurrent(); unsubscribeCurrent = null; }
   unsubscribeCurrent = onSnapshot(CURRENT_REF(), (snap)=>{
     if (snap.exists()) {
       const d = snap.data();
@@ -1299,7 +1304,7 @@ function renderParticipants(){
     top.appendChild(inputWrap);
     row.appendChild(top);
     if (rec.status) {
-      const statusColor = rec.status==="優勝" ? "var(--gold)" : rec.status==="敗退" ? "var(--sub)" : "var(--steel)";
+      const statusColor = rec.status==="優勝" ? "var(--gold)" : rec.status==="3位" ? "#B0755A" : rec.status==="敗退" ? "var(--sub)" : "var(--steel)";
       const statusRow = el(`<div class="row" style="margin-top:8px;">
         <span style="color:${statusColor};font-weight:700;font-family:var(--font-display);font-size:14px;">${rec.status}</span>
         <span style="font-family:var(--font-mono);letter-spacing:.15em;color:var(--sub);font-size:14px;">${rec.symbols.join(" ")}</span>
@@ -1308,7 +1313,11 @@ function renderParticipants(){
     }
     list.appendChild(row);
   });
-  document.getElementById("initBtn").onclick = () => { initializeParticipants(); persist(); render(); };
+  document.getElementById("initBtn").onclick = () => {
+    const hasData = state.participants.some(p => (p.name && p.name.trim()!=="") || p.checkedIn);
+    if (hasData && !confirm("既に入力されている参加者名・受付情報が消えてしまいますが、1〜50番で初期化しますか？")) return;
+    initializeParticipants(); persist(); render();
+  };
   document.getElementById("clearNamesBtn").onclick = () => { if(confirm("すべての参加者名をクリアしますか？")){ clearParticipantNames(); persist(); render(); } };
   document.getElementById("csvInput").onchange = (e) => {
     const f = e.target.files[0];
@@ -1713,11 +1722,13 @@ if (auth && firebaseReady) {
   });
   onAuthStateChanged(auth, (user) => {
     if (!user) {
+      if (unsubscribeCurrent) { unsubscribeCurrent(); unsubscribeCurrent = null; }
       showLoginGate(lastAuthError);
       lastAuthError = "";
       return;
     }
     if (user.email !== ALLOWED_EMAIL) {
+      if (unsubscribeCurrent) { unsubscribeCurrent(); unsubscribeCurrent = null; }
       lastAuthError = `このアカウント(${user.email})は利用できません`;
       signOut(auth).catch(()=>{});
       return;
