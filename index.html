@@ -438,6 +438,7 @@ function shuffled(arr){
 function startTournament(){
   const pool = state.participants.filter(p => p.checkedIn).map(p => p.number);
   if (pool.length === 0) { toast("受付済みの参加者がいません（先に「受付」タブで受付してください）"); return; }
+  if (pool.length === 1) { toast("大会を開始するには2名以上の受付が必要です"); return; }
   const cap = [32,24,16].includes(state.mode) ? state.mode : null;
   let selected = pool;
   if (cap && pool.length > cap) {
@@ -1215,7 +1216,7 @@ function renderHome(){
         ${phaseItemHtml('2. 敗者復活', '予選敗者から上位2名が復活', 'LOSERS_REVIVAL', revived)}
         ${phaseItemHtml('3. 本選', '通過者+復活者で再抽選｜上位2名が通過', 'MAIN_ROUND', finalists)}
         ${phaseItemHtml('4. 準決勝', isHybrid ? '1対1形式（必要なら複数回戦）｜勝者が決勝進出' : '本選通過者による対戦｜上位2名が決勝進出', 'SEMI_FINAL', [])}
-        ${phaseItemHtml('5. 決勝', isHybrid ? '1対1の最終決戦（3位決定戦あり）' : '最終決戦', 'FINAL', [])}
+        ${phaseItemHtml('5. 決勝', isHybrid ? '1対1の最終決戦（3位決定戦あり）' : '最終決戦', 'GRAND_FINAL', [])}
       </div>
     `;
   } else {
@@ -1262,7 +1263,7 @@ function renderHome(){
     ${state.champion !== null ? renderPodiumSummaryCard() : ''}
 
     <div class="card">
-      <button class="btn btn-ghost" id="startNewBtn">新規大会を開始（現在のデータを破棄）</button>
+      <button class="btn btn-ghost" id="startNewBtn">新規大会を開始（参加者・受付情報も含めて全て破棄）</button>
     </div>
   `;
 
@@ -1273,12 +1274,13 @@ function renderHome(){
   if (startBtn) startBtn.onclick = () => { startTournament(); switchTab("tournament"); };
   const clearBtn = document.getElementById("clearDataBtn");
   if (clearBtn) clearBtn.onclick = () => { if(confirm("大会データ（試合結果）をクリアしますか？参加者・受付情報は保持されます。")) clearTournamentData(); };
-  document.getElementById("startNewBtn").onclick = () => { if(confirm("現在の大会データをすべて破棄して新規に開始しますか？")) startNewTournament(); };
+  document.getElementById("startNewBtn").onclick = () => { if(confirm("参加者名簿・受付情報を含めて全てのデータを破棄し、まったく新しい大会を開始しますか？（試合結果だけを消したい場合は「大会データをクリア」を使ってください）")) startNewTournament(); };
 }
 
 // bracket方式（10人以下・全試合1対1）の進行状況カード
 function renderBracketProgressCard(){
   if (!state.bracketPool || state.bracketPool.length === 0) return "";
+  const isDone = state.phase==='FINAL'||state.phase==='CEREMONY'||state.phase==='COMPLETED';
   const active = bracketActivePool();
   const bracketRounds = state.matches.filter(m=>m.roundType==="BRACKET").map(m=>m.roundNumber);
   const currentRound = bracketRounds.length ? Math.max(...bracketRounds) : 0;
@@ -1288,11 +1290,11 @@ function renderBracketProgressCard(){
       <div class="muted">2敗するまで敗退しない方式のため、全員が最低2試合を消化できます。</div>
       <div class="row" style="margin-top:10px;">
         <span class="muted">現在のラウンド</span>
-        <span style="font-weight:700;">${state.phase==='FINAL'||state.phase==='CEREMONY'||state.phase==='COMPLETED' ? '決勝' : (currentRound>0 ? `第${currentRound}回戦` : '-')}</span>
+        <span style="font-weight:700;">${isDone ? '決勝' : (currentRound>0 ? `第${currentRound}回戦` : '-')}</span>
       </div>
       <div class="row" style="margin-top:6px;">
         <span class="muted">勝ち残り</span>
-        <span style="font-weight:700;">${active.length}名 / 全${state.bracketPool.length}名</span>
+        <span style="font-weight:700;">${isDone ? 1 : active.length}名 / 全${state.bracketPool.length}名</span>
       </div>
     </div>
   `;
@@ -1321,7 +1323,10 @@ function phaseItemHtml(title, desc, roundType, winners){
 // 優勝/準優勝/3位を算出（3位決定戦がある場合はそちらを優先、なければ決勝の3位を使用）
 function computeTopThree(){
   const gf = state.matches.find(m=>m.roundType==="GRAND_FINAL"&&m.status==="COMPLETED");
-  if (!gf) return [];
+  if (!gf) {
+    // 極端な少人数などでGRAND_FINALを経ずに優勝が確定したケースの保険
+    return state.champion !== null ? [state.champion] : [];
+  }
   const thirdMatch = state.matches.find(m=>m.roundType==="THIRD_PLACE"&&m.status==="COMPLETED");
   const ranks = [gf.rankings[0], gf.rankings[1]];
   if (thirdMatch) ranks.push(thirdMatch.rankings[0]);
