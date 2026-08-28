@@ -55,13 +55,14 @@
   main{flex:1;padding:20px 16px;padding-bottom:104px;overflow-y:auto;}
 
   nav.tabbar{position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:100%;max-width:520px;background:#EFE6D2;border-top:1px solid var(--line);display:flex;z-index:30;padding-top:6px;box-shadow:0 -2px 8px rgba(43,36,30,.08);}
-  nav.tabbar button{flex:1;border:none;background:none;padding:8px 2px 9px;font-family:var(--font-display);font-size:12px;letter-spacing:.02em;color:var(--sub);cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px;position:relative;border-radius:8px 8px 0 0;transition:transform .15s ease;}
+  nav.tabbar button{flex:1;border:none;background:none;padding:8px 1px 9px;font-family:var(--font-display);font-size:10.5px;letter-spacing:.01em;color:var(--sub);cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:2px;position:relative;border-radius:8px 8px 0 0;transition:transform .15s ease;white-space:nowrap;}
   nav.tabbar button:nth-child(1){--tab-color:var(--burgundy);}
   nav.tabbar button:nth-child(2){--tab-color:var(--forest);}
   nav.tabbar button:nth-child(3){--tab-color:var(--steel);}
   nav.tabbar button:nth-child(4){--tab-color:var(--gold);}
   nav.tabbar button:nth-child(5){--tab-color:var(--burgundy);}
   nav.tabbar button:nth-child(6){--tab-color:var(--forest);}
+  nav.tabbar button:nth-child(7){--tab-color:var(--steel);}
   nav.tabbar button.active{color:#fff;background:var(--tab-color);transform:translateY(-6px);box-shadow:0 -3px 6px rgba(43,36,30,.18);font-weight:700;}
   nav.tabbar button .ic{font-size:16px;}
 
@@ -199,6 +200,7 @@
 
   <nav class="tabbar">
     <button data-tab="home" class="active"><span class="ic">🏠</span>ホーム</button>
+    <button data-tab="reception"><span class="ic">📝</span>受付</button>
     <button data-tab="participants"><span class="ic">👥</span>参加者</button>
     <button data-tab="tournament"><span class="ic">🎮</span>試合</button>
     <button data-tab="display"><span class="ic">🖥️</span>大型画面</button>
@@ -346,6 +348,73 @@ function loadParticipantsFromCsv(text){
   }
   existing.sort((a,b)=>a.number-b.number);
   state.participants = existing;
+}
+
+/* ============================================================
+   受付（チェックイン）
+   ============================================================ */
+const GRADE_OPTIONS = ["小学1年","小学2年","小学3年","小学4年","小学5年","小学6年","中学生","高校生","大学生以上"];
+
+function registeredUncheckedParticipants(){
+  return state.participants.filter(p => p.name && p.name.trim() !== "" && !p.checkedIn);
+}
+function checkedInParticipants(){
+  return state.participants.filter(p => p.checkedIn).sort((a,b)=>(b.checkedInAt||0)-(a.checkedInAt||0));
+}
+
+function checkInExistingParticipant(number, grade){
+  const p = state.participants.find(x=>x.number===number);
+  if (!p) return;
+  p.checkedIn = true;
+  p.grade = grade;
+  p.checkedInAt = Date.now();
+  persist();
+  toast(`No.${p.number} ${p.name} を受付しました`);
+}
+
+function checkInNewParticipant(name, grade){
+  const trimmed = (name||"").trim();
+  if (!trimmed) { toast("名前を入力してください"); return; }
+  const maxNumber = state.participants.reduce((m,p)=>Math.max(m,p.number), 0);
+  const nextNumber = maxNumber + 1;
+  state.participants = [...state.participants, {
+    number: nextNumber,
+    name: trimmed,
+    grade,
+    checkedIn: true,
+    checkedInAt: Date.now()
+  }];
+  persist();
+  toast(`No.${nextNumber} ${trimmed} を新規登録して受付しました`);
+}
+
+function undoCheckIn(number){
+  const p = state.participants.find(x=>x.number===number);
+  if (!p) return;
+  p.checkedIn = false;
+  persist();
+}
+
+function exportReceptionCsv(){
+  const rows = [["番号","名前","学年","受付状況","受付時刻"]];
+  const sorted = [...state.participants]
+    .filter(p => p.name && p.name.trim() !== "")
+    .sort((a,b)=>a.number-b.number);
+  sorted.forEach(p=>{
+    const time = p.checkedInAt ? new Date(p.checkedInAt) : null;
+    const timeStr = time ? `${time.getFullYear()}/${String(time.getMonth()+1).padStart(2,'0')}/${String(time.getDate()).padStart(2,'0')} ${String(time.getHours()).padStart(2,'0')}:${String(time.getMinutes()).padStart(2,'0')}` : "";
+    rows.push([p.number, p.name, p.grade||"", p.checkedIn?"受付済み":"未受付", timeStr]);
+  });
+  const csv = rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(",")).join("\r\n");
+  const blob = new Blob(["\uFEFF"+csv], {type:"text/csv"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const ts = new Date();
+  a.href = url;
+  a.download = `受付名簿_${ts.getFullYear()}${String(ts.getMonth()+1).padStart(2,"0")}${String(ts.getDate()).padStart(2,"0")}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+  toast("受付名簿をCSV出力しました");
 }
 
 function shuffled(arr){
@@ -848,6 +917,7 @@ function switchTab(tab){
 
 function render(){
   if (currentTab === "home") renderHome();
+  else if (currentTab === "reception") renderReception();
   else if (currentTab === "participants") renderParticipants();
   else if (currentTab === "tournament") renderTournament();
   else if (currentTab === "history") renderHistory();
@@ -948,6 +1018,100 @@ function renderPodiumSummaryCard(){
     </div>
   `).join("");
   return `<div class="card"><h2>表彰結果</h2>${rows}</div>`;
+}
+
+let receptionMode = "existing"; // "existing" | "new"
+
+function renderReception(){
+  const main = document.getElementById("main");
+  const uncheckedList = registeredUncheckedParticipants();
+  const checkedList = checkedInParticipants();
+  const gradeOptionsHtml = GRADE_OPTIONS.map(g=>`<option value="${g}">${g}</option>`).join("");
+
+  main.innerHTML = `
+    <div class="card">
+      <div class="row">
+        <h2 style="margin:0;">受付</h2>
+        <span class="pill pill-active">受付済み ${checkedList.length}名</span>
+      </div>
+      <div class="btn-row" style="margin-top:12px;">
+        <button class="btn ${receptionMode==='existing'?'btn-primary':'btn-ghost'}" id="modeExistingBtn">登録済み参加者</button>
+        <button class="btn ${receptionMode==='new'?'btn-primary':'btn-ghost'}" id="modeNewBtn">新規参加者</button>
+      </div>
+    </div>
+    <div class="card" id="receptionForm"></div>
+    <div class="card">
+      <div class="row">
+        <h2 style="margin:0;">受付済み一覧</h2>
+        <button class="btn btn-ghost" id="exportCsvBtn" style="width:auto;padding:8px 14px;">CSV出力</button>
+      </div>
+      <div id="checkedInList" style="margin-top:10px;"></div>
+    </div>
+  `;
+
+  const formCard = document.getElementById("receptionForm");
+  if (receptionMode === "existing") {
+    if (uncheckedList.length === 0) {
+      formCard.innerHTML = `<div class="muted">未受付の登録済み参加者はいません。</div>`;
+    } else {
+      formCard.innerHTML = `
+        <div class="field-group">
+          <label class="field">参加者を選択</label>
+          <select id="existingSelect">
+            ${uncheckedList.map(p=>`<option value="${p.number}">No.${p.number} ${p.name}</option>`).join("")}
+          </select>
+        </div>
+        <div class="field-group">
+          <label class="field">学年</label>
+          <select id="existingGrade">${gradeOptionsHtml}</select>
+        </div>
+        <button class="btn btn-primary" id="existingCheckInBtn">受付する</button>
+      `;
+      document.getElementById("existingCheckInBtn").onclick = () => {
+        const number = parseInt(document.getElementById("existingSelect").value, 10);
+        const grade = document.getElementById("existingGrade").value;
+        checkInExistingParticipant(number, grade);
+        render();
+      };
+    }
+  } else {
+    formCard.innerHTML = `
+      <div class="field-group">
+        <label class="field">名前</label>
+        <input type="text" id="newName" placeholder="名前を入力">
+      </div>
+      <div class="field-group">
+        <label class="field">学年</label>
+        <select id="newGrade">${gradeOptionsHtml}</select>
+      </div>
+      <button class="btn btn-primary" id="newCheckInBtn">受付する</button>
+    `;
+    document.getElementById("newCheckInBtn").onclick = () => {
+      const name = document.getElementById("newName").value;
+      const grade = document.getElementById("newGrade").value;
+      checkInNewParticipant(name, grade);
+      render();
+    };
+  }
+
+  document.getElementById("modeExistingBtn").onclick = () => { receptionMode = "existing"; render(); };
+  document.getElementById("modeNewBtn").onclick = () => { receptionMode = "new"; render(); };
+  document.getElementById("exportCsvBtn").onclick = exportReceptionCsv;
+
+  const listEl = document.getElementById("checkedInList");
+  if (checkedList.length === 0) {
+    listEl.innerHTML = `<div class="muted">まだ受付はありません。</div>`;
+  } else {
+    checkedList.forEach(p=>{
+      const row = el(`<div class="row" style="padding:8px 0;border-bottom:1px dotted var(--line);"></div>`);
+      const info = el(`<div><span style="font-weight:700;">No.${p.number} ${p.name}</span><span class="muted" style="margin-left:8px;">${p.grade||''}</span></div>`);
+      const undoBtn = el(`<button class="btn btn-ghost" style="width:auto;padding:6px 10px;font-size:11px;">取消</button>`);
+      undoBtn.onclick = () => { if(confirm(`No.${p.number} ${p.name}の受付を取り消しますか？`)){ undoCheckIn(p.number); render(); } };
+      row.appendChild(info);
+      row.appendChild(undoBtn);
+      listEl.appendChild(row);
+    });
+  }
 }
 
 function renderParticipants(){
