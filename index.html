@@ -285,6 +285,7 @@ const PHASE_LABEL = {
   BRACKET_R1: "1回戦",
   BRACKET_W: "勝者側絞り込み",
   BRACKET_L: "敗者側絞り込み",
+  BRACKET_RR3: "総当たり戦",
   FINAL: "決勝",
   CEREMONY: "表彰式",
   COMPLETED: "完了"
@@ -297,6 +298,7 @@ const ROUND_FOR_PHASE = {
   BRACKET_R1: "BRACKET_R1",
   BRACKET_W: "BRACKET_W",
   BRACKET_L: "BRACKET_L",
+  BRACKET_RR3: "BRACKET_RR3",
   FINAL: "GRAND_FINAL"
 };
 
@@ -566,7 +568,51 @@ function startBracketTournament(selected){
     persist();
     return;
   }
+  if (selected.length === 3) {
+    // 3名の場合は「勝者側/敗者側」に分けると1名しか対戦できない人が出るため、
+    // 総当たり戦（3試合・全員が必ず2試合ずつ対戦）にする
+    generateRoundRobin3();
+    return;
+  }
   generateBracketRound1();
+}
+
+function generateRoundRobin3(){
+  const [a,b,c] = shuffled(state.bracketPool);
+  state.matches = [
+    { id:"総当たり1", roundType:"BRACKET_RR3", roundNumber:1, screenId:"総当たり1", participants:[a,b], status:"PENDING", rankings:[] },
+    { id:"総当たり2", roundType:"BRACKET_RR3", roundNumber:1, screenId:"総当たり2", participants:[b,c], status:"PENDING", rankings:[] },
+    { id:"総当たり3", roundType:"BRACKET_RR3", roundNumber:1, screenId:"総当たり3", participants:[a,c], status:"PENDING", rankings:[] }
+  ];
+  state.phase = "BRACKET_RR3";
+  persist();
+}
+
+// 総当たり戦(3試合)の結果から勝敗数を集計し、順位(1〜3位)を確定する
+// ※3人が1勝1敗ずつの「3すくみ」になった場合は、勝敗数だけでは決着がつかないため
+//   便宜上の順序で決定する(直接対決で明確に決着がついている部分は優先して反映する)
+function finishRoundRobin3(){
+  const matches = state.matches.filter(m=>m.roundType==="BRACKET_RR3");
+  const wins = {};
+  state.bracketPool.forEach(p=>{ wins[p] = 0; });
+  const headToHead = {};
+  matches.forEach(m=>{
+    const winner = m.rankings[0], loser = m.rankings[1];
+    wins[winner] = (wins[winner]||0) + 1;
+    headToHead[pairKey(m.participants[0], m.participants[1])] = winner;
+  });
+  let ranked = [...state.bracketPool].sort((a,b)=> (wins[b]||0) - (wins[a]||0));
+  if ((wins[ranked[0]]||0) === (wins[ranked[1]]||0) && headToHead[pairKey(ranked[0],ranked[1])] === ranked[1]) {
+    [ranked[0], ranked[1]] = [ranked[1], ranked[0]];
+  }
+  if ((wins[ranked[1]]||0) === (wins[ranked[2]]||0) && headToHead[pairKey(ranked[1],ranked[2])] === ranked[2]) {
+    [ranked[1], ranked[2]] = [ranked[2], ranked[1]];
+  }
+  state.matches = [...state.matches,
+    { id:"決勝", roundType:"GRAND_FINAL", roundNumber:1, screenId:"決勝", participants:[ranked[0],ranked[1]], status:"COMPLETED", rankings:[ranked[0],ranked[1]] },
+    { id:"3位決定戦", roundType:"THIRD_PLACE", roundNumber:1, screenId:"3位決定戦", participants:[ranked[2]], status:"COMPLETED", rankings:[ranked[2]] }
+  ];
+  state.phase = "FINAL";
 }
 
 // 各参加者の(このブラケット大会内での)実試合数。不戦勝を優先的に避けたい人を選ぶために使う
@@ -810,6 +856,7 @@ function getNextStageLabel(){
   if (state.phase === "BRACKET_L") {
     return bracketLosersActive().length <= 2 ? "準決勝ステージへ進む" : "敗者側の絞り込みを続ける";
   }
+  if (state.phase === "BRACKET_RR3") return "順位を確定する";
   return NEXT_STAGE_LABEL[state.phase];
 }
 
@@ -854,6 +901,9 @@ function advanceToNextPhase(){
   }
   else if (state.phase === "BRACKET_L") {
     progressBracketLosers(bracketLosersActive());
+  }
+  else if (state.phase === "BRACKET_RR3") {
+    finishRoundRobin3();
   }
   else if (state.phase === "FINAL") completeTournament();
   persist();
@@ -1420,7 +1470,9 @@ function renderBracketProgressCard(){
   const isDone = state.phase==='FINAL'||state.phase==='CEREMONY'||state.phase==='COMPLETED';
   let stageLabel = "-";
   let detailHtml = "";
-  if (state.phase === "BRACKET_R1") {
+  if (state.phase === "BRACKET_RR3") {
+    stageLabel = "総当たり戦（3人）";
+  } else if (state.phase === "BRACKET_R1") {
     stageLabel = "1回戦";
   } else if (state.phase === "BRACKET_W") {
     stageLabel = "勝者側の絞り込み";
@@ -1725,6 +1777,7 @@ function phaseCaption(){
       const bye = latest.length - real;
       return `敗者側絞り込み｜${real}試合${bye>0?`（不戦勝${bye}名）`:''}｜2名になるまで勝ち抜き戦`;
     }
+    case "BRACKET_RR3": return `3人総当たり戦｜3試合｜全員が2試合ずつ対戦`;
     case "FINAL": {
       const hasThird = state.matches.some(m=>m.roundType==="THIRD_PLACE");
       return hasThird ? `決勝戦（3位決定戦あり）` : `決勝戦`;
