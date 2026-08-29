@@ -256,6 +256,7 @@ const defaultState = () => ({
   engineType: null, // "group" | "hybrid" | "bracket"
   smallFormat: "full", // "full"(全試合1対1) | "semiOnly"(準決勝以降のみ1対1)　※10人以下の場合に選択
   bracketPool: [], // bracket方式(1対1)で使う、この大会に参加する全員の番号リスト
+  bracketR1Bye: null, // 1回戦で不戦勝だった人の番号(いない場合はnull)
   participants: [], // {number, name, nickname, checkedIn, checkedInAt}
   matches: [], // {id, roundType, roundNumber, screenId, participants:[num], status, rankings:[num]}
   champion: null,
@@ -281,7 +282,9 @@ const PHASE_LABEL = {
   LOSERS_REVIVAL: "敗者復活",
   MAIN_ROUND: "本選",
   SEMI_FINAL: "準決勝",
-  BRACKET: "トーナメント",
+  BRACKET_R1: "1回戦",
+  BRACKET_W: "勝者側絞り込み",
+  BRACKET_L: "敗者側絞り込み",
   FINAL: "決勝",
   CEREMONY: "表彰式",
   COMPLETED: "完了"
@@ -291,7 +294,9 @@ const ROUND_FOR_PHASE = {
   LOSERS_REVIVAL: "LOSERS_REVIVAL",
   MAIN_ROUND: "MAIN_ROUND",
   SEMI_FINAL: "SEMI_FINAL",
-  BRACKET: "BRACKET",
+  BRACKET_R1: "BRACKET_R1",
+  BRACKET_W: "BRACKET_W",
+  BRACKET_L: "BRACKET_L",
   FINAL: "GRAND_FINAL"
 };
 
@@ -546,52 +551,108 @@ function startHybridTournament(selected){
 }
 
 /* ------------------------------------------------------------
-   ブラケット方式（10人以下）：全試合1対1、2敗するまで敗退しない
-   （＝全員が最低2試合を消化できる。敗者復活を内包した方式）
+   ブラケット方式（10人以下）：全試合1対1
+   1回戦で「勝者側」「敗者側」の2グループに分け、それぞれを勝ち抜き戦で
+   2名ずつに絞り込んでから合流させることで、準決勝は必ず4名（2試合）になる
+   ＝3位決定戦が必ず行われる。人数によらず試合数が確定するため、
+   結果に左右されずスケジュールを組める。
    ------------------------------------------------------------ */
 function startBracketTournament(selected){
   state.engineType = "bracket";
   state.bracketPool = selected;
-  progressBracket();
-}
-
-// bracket方式でのある参加者の敗数（BRACKET試合のみ集計。不戦勝は敗数にカウントしない）
-function computeBracketLosses(){
-  const losses = {};
-  state.matches.filter(m=>m.roundType==="BRACKET" && m.status==="COMPLETED" && m.participants.length===2).forEach(m=>{
-    const loser = m.rankings[1];
-    losses[loser] = (losses[loser]||0) + 1;
-  });
-  return losses;
-}
-
-// bracket方式で、まだ2敗していない（＝勝ち残っている）参加者一覧
-function bracketActivePool(){
-  const losses = computeBracketLosses();
-  return (state.bracketPool||[]).filter(n => (losses[n]||0) < 2);
-}
-
-// bracket方式の次の1ラウンドを生成する（勝ち残りが2名になれば決勝へ）
-function progressBracket(){
-  const active = bracketActivePool();
-  if (active.length <= 2) {
-    finishBracketToFinal(active);
+  if (selected.length <= 2) {
+    // 2名以下はそのまま決勝のみ
+    generateGrandFinal(selected);
     persist();
     return;
   }
-  const historySet = buildPairHistorySet();
-  // 不戦勝は「これまでの実試合数が多い人」を優先（実試合が少ない人に不戦勝を割り当てて
-  // 最低2試合の消化が遅れるのを防ぐ）
-  const matchCounts = {};
-  state.matches.filter(m=>m.roundType==="BRACKET" && m.status==="COMPLETED" && m.participants.length===2).forEach(m=>{
-    m.participants.forEach(n=>{ matchCounts[n] = (matchCounts[n]||0) + 1; });
+  generateBracketRound1();
+}
+
+// 各参加者の(このブラケット大会内での)実試合数。不戦勝を優先的に避けたい人を選ぶために使う
+function bracketMatchCounts(){
+  const mc = {};
+  state.matches.filter(m=>m.status==="COMPLETED" && m.participants.length===2 &&
+    (m.roundType==="BRACKET_R1"||m.roundType==="BRACKET_W"||m.roundType==="BRACKET_L")
+  ).forEach(m=>{
+    m.participants.forEach(n=>{ mc[n] = (mc[n]||0) + 1; });
   });
-  let pairPool = shuffled(active);
+  return mc;
+}
+
+function generateBracketRound1(){
+  const pool = state.bracketPool;
+  const mc = bracketMatchCounts(); // 全員0のはず
+  let pairPool = shuffled(pool);
   let bye = null;
   if (pairPool.length % 2 === 1) {
-    pairPool.sort((a,b)=> (matchCounts[b]||0) - (matchCounts[a]||0));
+    // 不戦勝はまだ試合数が少ない人を優先(＝この後もできるだけ守られるようにする)
+    pairPool.sort((a,b)=> (mc[a]||0) - (mc[b]||0));
     bye = pairPool.shift();
   }
+  const historySet = buildPairHistorySet(); // 空のはず
+  const pairs = [];
+  for (let i=0;i<pairPool.length;i+=2) pairs.push([pairPool[i], pairPool[i+1]]);
+  const newMatches = pairs.map((pair,i)=>({
+    id: `1回戦${letterFor(i)}`,
+    roundType: "BRACKET_R1",
+    roundNumber: 1,
+    screenId: `1回戦-${letterFor(i)}`,
+    participants: pair,
+    status: "PENDING",
+    rankings: []
+  }));
+  if (bye !== null) {
+    newMatches.push({
+      id: "1回戦(不戦勝)",
+      roundType: "BRACKET_R1",
+      roundNumber: 1,
+      screenId: "1回戦-BYE",
+      participants: [bye],
+      status: "COMPLETED",
+      rankings: [bye]
+    });
+  }
+  state.matches = newMatches;
+  state.bracketR1Bye = bye;
+  state.phase = "BRACKET_R1";
+  persist();
+}
+
+// 1回戦の結果から「勝者側」「敗者側」の初期メンバーを算出
+function bracketWinnersPoolInitial(){
+  const r1 = state.matches.filter(m=>m.roundType==="BRACKET_R1");
+  const winners = r1.filter(m=>m.participants.length===2).map(m=>m.rankings[0]);
+  const byes = r1.filter(m=>m.participants.length===1).map(m=>m.rankings[0]);
+  return [...winners, ...byes];
+}
+function bracketLosersPoolInitial(){
+  const r1 = state.matches.filter(m=>m.roundType==="BRACKET_R1");
+  return r1.filter(m=>m.participants.length===2).map(m=>m.rankings[1]);
+}
+// 勝者側ブラケットで、まだ負けていない(勝ち抜き戦なので1敗で終了)人一覧
+function bracketWinnersActive(){
+  const initial = bracketWinnersPoolInitial();
+  const eliminated = new Set(state.matches.filter(m=>m.roundType==="BRACKET_W"&&m.status==="COMPLETED"&&m.participants.length===2).map(m=>m.rankings[1]));
+  return initial.filter(n=>!eliminated.has(n));
+}
+function bracketLosersActive(){
+  const initial = bracketLosersPoolInitial();
+  const eliminated = new Set(state.matches.filter(m=>m.roundType==="BRACKET_L"&&m.status==="COMPLETED"&&m.participants.length===2).map(m=>m.rankings[1]));
+  return initial.filter(n=>!eliminated.has(n));
+}
+
+// 勝ち抜き戦を1ラウンド生成する共通処理（勝者側・敗者側どちらでも使う）
+function generateSingleElimRound(pool, roundType, label){
+  const mc = bracketMatchCounts();
+  let pairPool = shuffled(pool);
+  let bye = null;
+  if (pairPool.length % 2 === 1) {
+    // 実試合数が少ない人を優先的に不戦勝にする(1回戦不戦勝の人を極力ここでも守る)
+    pairPool.sort((a,b)=> (mc[a]||0) - (mc[b]||0));
+    bye = pairPool.shift();
+  }
+  const historySet = buildPairHistorySet();
   let bestPairs = null, bestScore = Infinity;
   const attempts = pairPool.length <= 10 ? 300 : 100;
   for (let a=0; a<attempts && bestScore>0; a++){
@@ -601,49 +662,106 @@ function progressBracket(){
     const score = pairs.reduce((s,p)=> s + (historySet.has(pairKey(p[0],p[1])) ? 1 : 0), 0);
     if (score < bestScore){ bestScore = score; bestPairs = pairs; }
   }
-  const existingRounds = state.matches.filter(m=>m.roundType==="BRACKET").map(m=>m.roundNumber);
+  const existingRounds = state.matches.filter(m=>m.roundType===roundType).map(m=>m.roundNumber);
   const roundNumber = existingRounds.length ? Math.max(...existingRounds) + 1 : 1;
   const newMatches = bestPairs.map((pair,i)=>({
-    id: `第${roundNumber}回戦R${i+1}`,
-    roundType: "BRACKET",
+    id: `${label}${roundNumber}-${letterFor(i)}`,
+    roundType,
     roundNumber,
-    screenId: `第${roundNumber}回戦-${letterFor(i)}`,
+    screenId: `${label}${roundNumber}-${letterFor(i)}`,
     participants: pair,
     status: "PENDING",
     rankings: []
   }));
   if (bye !== null) {
     newMatches.push({
-      id: `第${roundNumber}回戦(不戦勝)`,
-      roundType: "BRACKET",
+      id: `${label}${roundNumber}(不戦勝)`,
+      roundType,
       roundNumber,
-      screenId: `第${roundNumber}回戦-BYE`,
+      screenId: `${label}${roundNumber}-BYE`,
       participants: [bye],
       status: "COMPLETED",
       rankings: [bye]
     });
   }
   state.matches = [...state.matches, ...newMatches];
-  state.phase = "BRACKET";
-  persist();
 }
 
-function finishBracketToFinal(active){
-  if (active.length === 2) {
-    // 直前のラウンドがちょうど2試合(4名)だった場合は、その敗者同士で3位決定戦を作る
-    const latest = latestRoundMatches("BRACKET");
-    const realMatches = latest.filter(m=>m.participants.length===2);
-    if (realMatches.length === 2) {
-      const losers = realMatches.map(m=>m.rankings[1]);
-      generateThirdPlaceMatch(losers);
-    }
-    generateGrandFinal(active);
-  } else if (active.length === 1) {
-    // 極端な少人数などで1名だけ残った場合はそのまま優勝とする
-    state.champion = active[0];
-    state.phase = "CEREMONY";
-    saveTournamentToHistory();
+// 勝者側ブラケットを1ラウンド進める。2名に絞れたら敗者側の絞り込みへ
+// ※1回戦で不戦勝だった人(まだ1試合もしていない人)がいる場合、その人を除いた
+//   残りを1名になるまで絞り込んでから合流させる。これにより、1回戦不戦勝の人が
+//   準決勝より前に「1試合もしないまま敗退する」ことを防ぐ（残りが偶数でも安全）。
+function progressBracketWinners(pool){
+  if (pool.length <= 2) {
+    state.phase = "BRACKET_L";
+    progressBracketLosers(bracketLosersActive());
+    return;
   }
+  const byePerson = state.bracketR1Bye;
+  const byeStillUnplayed = byePerson !== null && pool.includes(byePerson) && (bracketMatchCounts()[byePerson]||0) === 0;
+  const targetPool = byeStillUnplayed ? pool.filter(n => n !== byePerson) : pool;
+  generateSingleElimRound(targetPool, "BRACKET_W", "勝者側絞込R");
+  state.phase = "BRACKET_W";
+}
+
+// 敗者側ブラケットを1ラウンド進める。2名に絞れたら勝者側と合流して準決勝(4名)へ
+function progressBracketLosers(pool){
+  if (pool.length <= 2) {
+    const winners2 = bracketWinnersActive();
+    generateSemiFinalFromBracket(winners2, pool);
+    return;
+  }
+  generateSingleElimRound(pool, "BRACKET_L", "敗者側絞込R");
+  state.phase = "BRACKET_L";
+}
+
+function generateThirdPlaceMatchDirect(number){
+  // 敗者側が1名しかおらず対戦相手がいない場合、対戦なしでそのまま3位とする
+  state.matches = [...state.matches, {
+    id: "3位決定戦",
+    roundType: "THIRD_PLACE",
+    roundNumber: 1,
+    screenId: "3位決定戦",
+    participants: [number],
+    status: "COMPLETED",
+    rankings: [number]
+  }];
+}
+
+// 勝者側2名＋敗者側2名の合計4名で準決勝を組む（通常は必ず4名＝2試合になる）
+function generateSemiFinalFromBracket(winners2, losers){
+  const four = [...winners2, ...losers];
+  if (four.length === 3 && winners2.length === 2 && losers.length === 1) {
+    // 総参加者3名など、敗者側に1名しかいない極端なケース：
+    // 対戦相手がいないためその1名をそのまま3位とし、勝者側2名で決勝を行う
+    generateThirdPlaceMatchDirect(losers[0]);
+    generateGrandFinal(winners2);
+    return;
+  }
+  if (four.length !== 4) {
+    // その他の極端なケースはそのまま決勝へ
+    generateGrandFinal(four.length ? four : winners2);
+    return;
+  }
+  const historySet = buildPairHistorySet();
+  let bestPairs = null, bestScore = Infinity;
+  for (let a=0; a<100 && bestScore>0; a++){
+    const arr = shuffled(four);
+    const pairs = [[arr[0],arr[1]], [arr[2],arr[3]]];
+    const score = pairs.reduce((s,p)=> s + (historySet.has(pairKey(p[0],p[1])) ? 1 : 0), 0);
+    if (score < bestScore){ bestScore = score; bestPairs = pairs; }
+  }
+  const newMatches = bestPairs.map((pair,i)=>({
+    id: `準決勝${letterFor(i)}`,
+    roundType: "SEMI_FINAL",
+    roundNumber: 1,
+    screenId: `準決勝-${letterFor(i)}`,
+    participants: pair,
+    status: "PENDING",
+    rankings: []
+  }));
+  state.matches = [...state.matches, ...newMatches];
+  state.phase = "SEMI_FINAL";
 }
 
 function startMatch(matchId){
@@ -679,14 +797,18 @@ function getNextStageLabel(){
     return winners.length <= threshold ? "決勝ステージへ進む" : "準決勝ステージへ進む";
   }
   if (state.phase === "SEMI_FINAL") {
+    if (state.engineType === "bracket") return "決勝ステージへ進む"; // 常に4名2試合のため必ずここで決勝が確定
     const perMatch = state.engineType === "hybrid" ? 1 : 2;
     const threshold = state.engineType === "hybrid" ? 2 : 4;
     const winners = latestRoundMatches("SEMI_FINAL").flatMap(m=>m.rankings.slice(0,perMatch));
     return winners.length <= threshold ? "決勝ステージへ進む" : "準決勝を続ける（絞り込み）";
   }
-  if (state.phase === "BRACKET") {
-    const active = bracketActivePool();
-    return active.length <= 2 ? "決勝ステージへ進む" : "次のラウンドへ進む";
+  if (state.phase === "BRACKET_R1") return "勝者側・敗者側の絞り込みへ進む";
+  if (state.phase === "BRACKET_W") {
+    return bracketWinnersActive().length <= 2 ? "敗者側の絞り込みへ進む" : "勝者側の絞り込みを続ける";
+  }
+  if (state.phase === "BRACKET_L") {
+    return bracketLosersActive().length <= 2 ? "準決勝ステージへ進む" : "敗者側の絞り込みを続ける";
   }
   return NEXT_STAGE_LABEL[state.phase];
 }
@@ -709,14 +831,29 @@ function advanceToNextPhase(){
     else proceedTowardFinalGroup(winners);
   }
   else if (state.phase === "SEMI_FINAL") {
-    const perMatch = state.engineType === "hybrid" ? 1 : 2;
-    const winners = latestRoundMatches("SEMI_FINAL").flatMap(m=>m.rankings.slice(0,perMatch));
-    if (state.engineType === "hybrid") proceedTowardFinalOneVOne(winners);
-    else proceedTowardFinalGroup(winners);
+    if (state.engineType === "bracket") {
+      // 常に2試合(4名)のため、勝者2名→決勝、敗者2名→3位決定戦が必ず両方生成される
+      const semiMatches = latestRoundMatches("SEMI_FINAL");
+      const winners = semiMatches.map(m=>m.rankings[0]);
+      const losers = semiMatches.map(m=>m.rankings[1]);
+      generateThirdPlaceMatch(losers);
+      generateGrandFinal(winners);
+    } else {
+      const perMatch = state.engineType === "hybrid" ? 1 : 2;
+      const winners = latestRoundMatches("SEMI_FINAL").flatMap(m=>m.rankings.slice(0,perMatch));
+      if (state.engineType === "hybrid") proceedTowardFinalOneVOne(winners);
+      else proceedTowardFinalGroup(winners);
+    }
   }
-  else if (state.phase === "BRACKET") {
-    progressBracket();
-    return; // progressBracket内でpersist済み
+  else if (state.phase === "BRACKET_R1") {
+    state.phase = "BRACKET_W";
+    progressBracketWinners(bracketWinnersActive());
+  }
+  else if (state.phase === "BRACKET_W") {
+    progressBracketWinners(bracketWinnersActive());
+  }
+  else if (state.phase === "BRACKET_L") {
+    progressBracketLosers(bracketLosersActive());
   }
   else if (state.phase === "FINAL") completeTournament();
   persist();
@@ -922,13 +1059,20 @@ function computeParticipantRecord(number){
     status = "優勝";
   } else if (state.engineType === "bracket") {
     const lastMatch = relevant[relevant.length - 1];
+    const lastRank = lastMatch.rankings.indexOf(number);
     if (lastMatch.roundType === "THIRD_PLACE") {
-      status = lastMatch.rankings.indexOf(number) === 0 ? "3位" : "敗退";
+      status = lastRank === 0 ? "3位" : "敗退";
     } else if (lastMatch.roundType === "GRAND_FINAL") {
       status = "敗退"; // 準優勝
+    } else if (lastMatch.roundType === "SEMI_FINAL") {
+      status = "勝ち上がり中"; // 勝者は決勝、敗者も3位決定戦へ進むため、この時点では終了しない
+    } else if (lastMatch.roundType === "BRACKET_R1") {
+      status = "勝ち上がり中"; // 勝敗にかかわらず、勝者側 or 敗者側の絞り込みへ進む
+    } else if (lastMatch.roundType === "BRACKET_W" || lastMatch.roundType === "BRACKET_L") {
+      // 勝者側・敗者側とも、絞り込み段階は負けたら終了(シングルエリミネーション)
+      status = lastRank === 0 ? "勝ち上がり中" : "敗退";
     } else {
-      const losses = relevant.filter(m => m.roundType==="BRACKET" && m.participants.length===2 && m.rankings.indexOf(number)===1).length;
-      status = losses >= 2 ? "敗退" : "勝ち上がり中";
+      status = "勝ち上がり中";
     }
   } else {
     const lastMatch = relevant[relevant.length - 1];
@@ -971,6 +1115,7 @@ function clearTournamentData(){
   state.champion = null;
   state.engineType = null;
   state.bracketPool = [];
+  state.bracketR1Bye = null;
   persist();
 }
 
@@ -995,6 +1140,7 @@ function persist(){
         engineType: state.engineType,
         smallFormat: state.smallFormat,
         bracketPool: state.bracketPool,
+        bracketR1Bye: state.bracketR1Bye,
         participants: state.participants,
         matches: state.matches,
         champion: state.champion,
@@ -1048,6 +1194,7 @@ function loadHistoryIntoState(item){
   state.engineType = item.engineType || null;
   state.smallFormat = item.smallFormat || "full";
   state.bracketPool = item.bracketPool || [];
+  state.bracketR1Bye = item.bracketR1Bye ?? null;
   state.participants = item.participants || [];
   state.matches = item.matches || [];
   state.champion = item.champion || null;
@@ -1090,6 +1237,7 @@ function subscribeRealtime(){
       state.engineType = d.engineType ?? state.engineType;
       state.smallFormat = d.smallFormat ?? state.smallFormat;
       state.bracketPool = d.bracketPool ?? state.bracketPool;
+      state.bracketR1Bye = d.bracketR1Bye ?? state.bracketR1Bye;
       state.participants = d.participants ?? state.participants;
       state.matches = d.matches ?? state.matches;
       state.champion = d.champion ?? state.champion;
@@ -1128,6 +1276,7 @@ function importData(file){
         state.engineType = data.current.engineType ?? state.engineType;
         state.smallFormat = data.current.smallFormat ?? state.smallFormat;
         state.bracketPool = data.current.bracketPool ?? state.bracketPool;
+        state.bracketR1Bye = data.current.bracketR1Bye ?? state.bracketR1Bye;
         state.participants = data.current.participants ?? state.participants;
         state.matches = data.current.matches ?? state.matches;
         state.champion = data.current.champion ?? state.champion;
@@ -1269,21 +1418,30 @@ function renderHome(){
 function renderBracketProgressCard(){
   if (!state.bracketPool || state.bracketPool.length === 0) return "";
   const isDone = state.phase==='FINAL'||state.phase==='CEREMONY'||state.phase==='COMPLETED';
-  const active = bracketActivePool();
-  const bracketRounds = state.matches.filter(m=>m.roundType==="BRACKET").map(m=>m.roundNumber);
-  const currentRound = bracketRounds.length ? Math.max(...bracketRounds) : 0;
+  let stageLabel = "-";
+  let detailHtml = "";
+  if (state.phase === "BRACKET_R1") {
+    stageLabel = "1回戦";
+  } else if (state.phase === "BRACKET_W") {
+    stageLabel = "勝者側の絞り込み";
+    detailHtml = `<div class="row" style="margin-top:6px;"><span class="muted">勝者側 残り</span><span style="font-weight:700;">${bracketWinnersActive().length}名</span></div>`;
+  } else if (state.phase === "BRACKET_L") {
+    stageLabel = "敗者側の絞り込み";
+    detailHtml = `<div class="row" style="margin-top:6px;"><span class="muted">敗者側 残り</span><span style="font-weight:700;">${bracketLosersActive().length}名（勝者側は2名に確定）</span></div>`;
+  } else if (state.phase === "SEMI_FINAL") {
+    stageLabel = "準決勝（4名）";
+  } else if (isDone) {
+    stageLabel = "決勝";
+  }
   return `
     <div class="card">
       <h2>進行状況（全試合1対1）</h2>
-      <div class="muted">2敗するまで敗退しない方式のため、全員が最低2試合を消化できます。</div>
+      <div class="muted">1回戦の勝者側・敗者側をそれぞれ勝ち抜き戦で2名に絞り込み、必ず4名で準決勝＋3位決定戦を行います。</div>
       <div class="row" style="margin-top:10px;">
-        <span class="muted">現在のラウンド</span>
-        <span style="font-weight:700;">${isDone ? '決勝' : (currentRound>0 ? `第${currentRound}回戦` : '-')}</span>
+        <span class="muted">現在のステージ</span>
+        <span style="font-weight:700;">${stageLabel}</span>
       </div>
-      <div class="row" style="margin-top:6px;">
-        <span class="muted">勝ち残り</span>
-        <span style="font-weight:700;">${isDone ? 1 : active.length}名 / 全${state.bracketPool.length}名</span>
-      </div>
+      ${detailHtml}
     </div>
   `;
 }
@@ -1549,11 +1707,23 @@ function phaseCaption(){
       const roundNote = rounds > 1 ? `（絞り込み${rounds}回戦）` : "";
       return `${latest.length}試合${roundNote}｜上位2名が決勝進出`;
     }
-    case "BRACKET": {
-      const latest = latestRoundMatches("BRACKET");
+    case "BRACKET_R1": {
+      const latest = latestRoundMatches("BRACKET_R1");
       const real = latest.filter(m=>m.participants.length===2).length;
       const bye = latest.length - real;
-      return `${real}試合${bye>0?`（不戦勝${bye}名）`:''}｜勝者は次のラウンドへ、初めての敗戦は敗者復活、2敗で敗退`;
+      return `${real}試合${bye>0?`（不戦勝${bye}名）`:''}｜勝者は勝者側、敗者は敗者側の絞り込みへ`;
+    }
+    case "BRACKET_W": {
+      const latest = latestRoundMatches("BRACKET_W");
+      const real = latest.filter(m=>m.participants.length===2).length;
+      const bye = latest.length - real;
+      return `勝者側絞り込み｜${real}試合${bye>0?`（不戦勝${bye}名）`:''}｜2名になるまで勝ち抜き戦`;
+    }
+    case "BRACKET_L": {
+      const latest = latestRoundMatches("BRACKET_L");
+      const real = latest.filter(m=>m.participants.length===2).length;
+      const bye = latest.length - real;
+      return `敗者側絞り込み｜${real}試合${bye>0?`（不戦勝${bye}名）`:''}｜2名になるまで勝ち抜き戦`;
     }
     case "FINAL": {
       const hasThird = state.matches.some(m=>m.roundType==="THIRD_PLACE");
@@ -1597,7 +1767,7 @@ function renderTournament(){
   // 現在進行中のステージの試合のみを表示（完了したステージは非表示）
   const roundType = ROUND_FOR_PHASE[state.phase];
   let currentMatches;
-  if (roundType === "SEMI_FINAL" || roundType === "BRACKET") {
+  if (["SEMI_FINAL","BRACKET_R1","BRACKET_W","BRACKET_L"].includes(roundType)) {
     currentMatches = latestRoundMatches(roundType);
   } else if (roundType === "GRAND_FINAL") {
     currentMatches = state.matches.filter(m=>m.roundType==="GRAND_FINAL"||m.roundType==="THIRD_PLACE");
