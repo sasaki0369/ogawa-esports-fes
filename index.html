@@ -110,7 +110,7 @@
   .status-IN_PROGRESS{background:var(--burgundy);color:#fff;}
   .status-COMPLETED{background:var(--forest);color:#fff;}
   .plist{margin-top:10px;display:grid;gap:8px;}
-  .ptag{position:relative;background:#FFFDF9;border-radius:6px;padding:8px 6px;font-family:var(--font-mono);font-size:12px;border:1px solid var(--line);box-shadow:0 1px 2px rgba(43,36,30,.06);text-align:center;overflow:hidden;}
+  .ptag{position:relative;background:#FFFDF9;border-radius:6px;padding:8px 6px;font-family:var(--font-mono);font-size:12px;border:1px solid var(--line);box-shadow:0 1px 2px rgba(43,36,30,.06);text-align:center;overflow:hidden;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;}
   .ptag-num{font-family:var(--font-mono);font-weight:700;font-size:15px;color:var(--gold);line-height:1.2;}
   .ptag-name{font-size:11px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink);}
   .ptag-big{padding:clamp(14px,2.6vh,32px) 8px;}
@@ -1794,6 +1794,7 @@ function renderTournament(){
     <div class="card">
       <div class="row"><h2 style="margin:0;">試合進行</h2><span class="pill pill-active">${PHASE_LABEL[state.phase]}</span></div>
       <div class="muted" style="margin-top:6px;">${phaseCaption()}</div>
+      <div class="muted" style="margin-top:6px;font-size:11px;">💡 選手名を長押しすると表示名を変更できます</div>
       ${(readyToAdvance||readyToFinish) ? `<button class="btn btn-primary" id="advanceBtn" style="margin-top:12px;">${getNextStageLabel()}</button>` : ''}
     </div>
     <div id="matchList"></div>
@@ -1835,6 +1836,48 @@ function renderTournament(){
     return;
   }
   currentMatches.forEach(m => list.appendChild(renderMatchCard(m)));
+  attachLongPressRename(list);
+}
+
+// 選手名タグを長押しすると、その場で表示名(ニックネーム)を変更できるようにする
+function attachLongPressRename(container){
+  const LONG_PRESS_MS = 550;
+  let timer = null;
+  let moved = false;
+  const start = (e) => {
+    const tag = e.target.closest(".ptag");
+    if (!tag) return;
+    cancel(); // 既存のタイマーがあれば先にクリア(タッチ+合成マウスイベントの二重発火を防ぐ)
+    moved = false;
+    const number = parseInt(tag.dataset.number, 10);
+    timer = setTimeout(() => {
+      timer = null;
+      if (!moved) openRenameParticipant(number);
+    }, LONG_PRESS_MS);
+  };
+  const cancel = () => { if (timer) { clearTimeout(timer); timer = null; } };
+  const markMoved = () => { moved = true; cancel(); };
+  container.addEventListener("touchstart", start, { passive: true });
+  container.addEventListener("touchend", cancel);
+  container.addEventListener("touchmove", markMoved);
+  container.addEventListener("mousedown", start);
+  container.addEventListener("mouseup", cancel);
+  container.addEventListener("mouseleave", cancel);
+  // 右クリック(PCでの長押し相当)によるコンテキストメニューは抑止する
+  container.addEventListener("contextmenu", (e) => { if (e.target.closest(".ptag")) e.preventDefault(); });
+}
+
+function openRenameParticipant(number){
+  const p = participantByNumber(number);
+  if (!p) return;
+  const current = p.nickname || p.name || "";
+  const input = window.prompt(`No.${number} の表示名（ニックネーム）を入力してください`, current);
+  if (input === null) return; // キャンセル
+  const trimmed = input.trim();
+  if (!trimmed) { toast("名前を入力してください"); return; }
+  p.nickname = trimmed;
+  persist();
+  toast(`No.${number} の表示名を「${trimmed}」に変更しました`);
 }
 
 function participantGridHtml(numbers, opts={}){
@@ -1842,7 +1885,7 @@ function participantGridHtml(numbers, opts={}){
   const cellClass = opts.big ? "ptag ptag-big" : "ptag";
   const cells = numbers.map(n=>{
     const nm = displayName(n);
-    return `<div class="${cellClass}"><div class="ptag-num">${n}</div><div class="ptag-name">${nm||''}</div></div>`;
+    return `<div class="${cellClass}" data-number="${n}"><div class="ptag-num">${n}</div><div class="ptag-name">${nm||''}</div></div>`;
   }).join("");
   return `<div class="plist" style="grid-template-columns:repeat(${cols},1fr);">${cells}</div>`;
 }
