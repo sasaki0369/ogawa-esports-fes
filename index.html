@@ -1786,6 +1786,21 @@ function phaseCaption(){
   }
 }
 
+let showAllMatches = false; // 「全体の進行状況」表示中かどうか(タブ切替時はリセットしない画面内トグル)
+
+const ROUND_TYPE_LABEL = {
+  PRELIMINARY: "予選",
+  LOSERS_REVIVAL: "敗者復活",
+  MAIN_ROUND: "本選",
+  SEMI_FINAL: "準決勝",
+  BRACKET_R1: "1回戦",
+  BRACKET_W: "勝者側絞り込み",
+  BRACKET_L: "敗者側絞り込み",
+  BRACKET_RR3: "総当たり戦",
+  GRAND_FINAL: "決勝",
+  THIRD_PLACE: "3位決定戦"
+};
+
 function renderTournament(){
   const main = document.getElementById("main");
   const readyToAdvance = isPhaseReadyToAdvance() && state.phase !== "FINAL";
@@ -1796,9 +1811,11 @@ function renderTournament(){
       <div class="muted" style="margin-top:6px;">${phaseCaption()}</div>
       <div class="muted" style="margin-top:6px;font-size:11px;">💡 選手名を長押しすると表示名を変更できます</div>
       ${(readyToAdvance||readyToFinish) ? `<button class="btn btn-primary" id="advanceBtn" style="margin-top:12px;">${getNextStageLabel()}</button>` : ''}
+      <button class="btn btn-ghost" id="toggleAllBtn" style="margin-top:10px;">${showAllMatches ? '現在のステージのみ表示' : '全体の進行状況を見る'}</button>
     </div>
     <div id="matchList"></div>
   `;
+  document.getElementById("toggleAllBtn").onclick = () => { showAllMatches = !showAllMatches; render(); };
   const advBtn = document.getElementById("advanceBtn");
   if (advBtn) {
     advBtn.onclick = () => {
@@ -1816,6 +1833,11 @@ function renderTournament(){
   const list = document.getElementById("matchList");
   if (state.matches.length === 0) {
     list.innerHTML = `<div class="empty">大会を開始すると試合が表示されます</div>`;
+    return;
+  }
+  if (showAllMatches) {
+    renderAllMatchesOverview(list);
+    attachLongPressRename(list);
     return;
   }
   // 現在進行中のステージの試合のみを表示（完了したステージは非表示）
@@ -1837,6 +1859,34 @@ function renderTournament(){
   }
   currentMatches.forEach(m => list.appendChild(renderMatchCard(m)));
   attachLongPressRename(list);
+}
+
+// 全ステージ(完了済み・進行中・未実施すべて)をグループ表示する「全体の進行状況」ビュー
+function renderAllMatchesOverview(list){
+  const groups = [];
+  let currentKey = null;
+  state.matches.forEach(m => {
+    const key = `${m.roundType}__${m.roundNumber}`;
+    if (key !== currentKey) {
+      groups.push({ roundType: m.roundType, roundNumber: m.roundNumber, matches: [] });
+      currentKey = key;
+    }
+    groups[groups.length-1].matches.push(m);
+  });
+  groups.forEach(g => {
+    const baseLabel = ROUND_TYPE_LABEL[g.roundType] || g.roundType;
+    const label = g.roundNumber > 1 ? `${baseLabel}（${g.roundNumber}回戦）` : baseLabel;
+    const allDone = g.matches.every(m=>m.status==="COMPLETED");
+    const anyInProgress = g.matches.some(m=>m.status==="IN_PROGRESS");
+    const statusPill = allDone ? '<span class="pill pill-done">完了</span>' : (anyInProgress ? '<span class="pill pill-active">進行中</span>' : '<span class="pill pill-wait">待機中</span>');
+    const header = el(`<div class="row" style="margin:14px 0 6px;"><span style="font-family:var(--font-display);font-weight:700;font-size:16px;color:var(--burgundy);">${label}</span>${statusPill}</div>`);
+    list.appendChild(header);
+    g.matches.forEach(m => list.appendChild(renderMatchCard(m)));
+  });
+  if (state.champion !== null) {
+    list.appendChild(el(`<div class="row" style="margin:14px 0 6px;"><span style="font-family:var(--font-display);font-weight:700;font-size:16px;color:var(--gold);">🏆 大会結果</span></div>`));
+    list.appendChild(el(renderPodiumSummaryCard()));
+  }
 }
 
 // 選手名タグを長押しすると、その場で表示名(ニックネーム)を変更できるようにする
